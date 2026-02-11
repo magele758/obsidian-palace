@@ -1,0 +1,9 @@
+{
+  "id": "obsidian-ai-translator",
+  "name": "AI Translator",
+  "version": "1.0.0",
+  "minAppVersion": "0.16.0",
+  "description": "使用 AI 翻译文档内容，支持 OpenAI 兼容的 API 服务",
+  "author": "penglei",
+  "isDesktopOnly": false
+}
