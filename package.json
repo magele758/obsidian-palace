@@ -1,13 +1,13 @@
 {
-  "name": "obsidian-ai-translator",
-  "version": "1.0.0",
-  "description": "Obsidian AI Translator Plugin",
+  "name": "obsidian-palace",
+  "version": "2.0.0",
+  "description": "Obsidian Palace - AI Agent, Memory Palace, Translation, Skills & Sandbox",
   "main": "main.js",
   "scripts": {
     "dev": "node esbuild.config.mjs",
     "build": "node esbuild.config.mjs production"
   },
-  "keywords": [],
+  "keywords": ["obsidian", "ai", "agent", "knowledge-graph", "memory-palace"],
   "author": "magele758",
   "license": "MIT",
   "devDependencies": {

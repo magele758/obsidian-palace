@@ -1,215 +1,273 @@
-import { Editor, MarkdownView, Notice, Plugin, TFile, TFolder } from 'obsidian';
-import { AITranslatorSettings, AITranslatorSettingTab, DEFAULT_SETTINGS } from './settings';
+/**
+ * Obsidian Palace - AI-powered knowledge management plugin
+ *
+ * Features:
+ * - AI Agent with tool calling (search, read/write notes, code execution)
+ * - Skill system (loads from ~/.claude, ~/.codex, ~/.agents)
+ * - Memory Palace (knowledge graph + spaced repetition flashcards)
+ * - Document translation (OpenAI-compatible APIs)
+ * - Cloud sandbox (E2B) for code execution
+ */
+
+import { Editor, MarkdownView, Notice, Plugin, TFile } from 'obsidian';
+import { PalaceSettings, PalaceSettingTab, DEFAULT_SETTINGS } from './settings';
 import { Translator, TranslatorConfig } from './translator';
 import { ChatView, CHAT_VIEW_TYPE } from './chatView';
+import { PalaceView, PALACE_VIEW_TYPE } from './palace/palaceView';
+import { LLMClient } from './shared/llmClient';
+import { KnowledgeGraph } from './palace/knowledgeGraph';
+import { GraphExtractor } from './palace/graphExtractor';
+import { SkillRegistry } from './skills/skillRegistry';
+import { E2BProvider } from './sandbox/e2bProvider';
+import type { PalaceData, SandboxProvider } from './shared/types';
 
-export default class AITranslatorPlugin extends Plugin {
-  settings: AITranslatorSettings;
+const PALACE_DATA_KEY = 'palace-data';
+
+export default class ObsidianPalacePlugin extends Plugin {
+  settings: PalaceSettings;
+  knowledgeGraph: KnowledgeGraph;
+  palaceData: PalaceData | null = null;
+  skillRegistry: SkillRegistry;
+  sandboxProvider: SandboxProvider | null = null;
 
   async onload() {
     await this.loadSettings();
-    this.addSettingTab(new AITranslatorSettingTab(this.app, this));
+    await this.loadPalaceData();
 
-    // 注册聊天视图
-    this.registerView(
-      CHAT_VIEW_TYPE,
-      (leaf) => new ChatView(leaf, this)
-    );
+    // Init skill registry
+    this.skillRegistry = new SkillRegistry();
+    this.loadSkills();
 
-    // Ribbon 图标：打开 AI 助手面板
-    this.addRibbonIcon('message-square', '打开 AI 助手', () => {
+    // Init sandbox if configured
+    this.initSandbox();
+
+    // Settings tab
+    this.addSettingTab(new PalaceSettingTab(this.app, this));
+
+    // Register views
+    this.registerView(CHAT_VIEW_TYPE, (leaf) => new ChatView(leaf, this));
+    this.registerView(PALACE_VIEW_TYPE, (leaf) => new PalaceView(leaf, this));
+
+    // Ribbon icons
+    this.addRibbonIcon('message-square', 'Open AI Assistant', () => {
       this.activateChatView();
     });
 
-    // 命令：打开 AI 助手
+    this.addRibbonIcon('brain', 'Open Memory Palace', () => {
+      this.activatePalaceView();
+    });
+
+    // Commands
     this.addCommand({
       id: 'open-ai-chat',
-      name: '打开 AI 文档助手',
+      name: 'Open AI Assistant',
       callback: () => this.activateChatView(),
     });
 
-    // 命令：翻译当前文档全文
+    this.addCommand({
+      id: 'open-palace',
+      name: 'Open Memory Palace',
+      callback: () => this.activatePalaceView(),
+    });
+
+    this.addCommand({
+      id: 'extract-knowledge',
+      name: 'Extract Knowledge from Current Document',
+      callback: () => this.extractKnowledge(),
+    });
+
     this.addCommand({
       id: 'translate-current-document',
-      name: '翻译当前文档',
+      name: 'Translate Current Document',
       callback: () => this.translateCurrentDocument(),
     });
 
-    // 命令：翻译选中文本
     this.addCommand({
       id: 'translate-selection',
-      name: '翻译选中文本',
-      editorCallback: (editor: Editor, view: MarkdownView) => {
+      name: 'Translate Selected Text',
+      editorCallback: (editor: Editor) => {
         this.translateSelection(editor);
       },
     });
 
-    // 文件管理器右键菜单
+    // Context menus
     this.registerEvent(
       this.app.workspace.on('file-menu', (menu, file) => {
         if (file instanceof TFile && file.extension === 'md') {
           menu.addItem((item) => {
-            item
-              .setTitle('AI 翻译此文档')
-              .setIcon('languages')
+            item.setTitle('AI Translate').setIcon('languages')
               .onClick(() => this.translateFile(file));
           });
+
+          if (this.settings.palaceEnabled) {
+            menu.addItem((item) => {
+              item.setTitle('Extract Knowledge').setIcon('brain')
+                .onClick(() => this.extractKnowledgeFromFile(file));
+            });
+          }
         }
       })
     );
 
-    // 编辑器右键菜单
     this.registerEvent(
       this.app.workspace.on('editor-menu', (menu, editor, view) => {
         if (editor.getSelection()) {
           menu.addItem((item) => {
-            item
-              .setTitle('AI 翻译选中文本')
-              .setIcon('languages')
+            item.setTitle('AI Translate Selection').setIcon('languages')
               .onClick(() => this.translateSelection(editor));
           });
         }
 
         menu.addItem((item) => {
-          item
-            .setTitle('AI 翻译全文')
-            .setIcon('languages')
+          item.setTitle('AI Translate Full Document').setIcon('languages')
             .onClick(() => this.translateCurrentDocument());
         });
       })
     );
   }
 
+  async onunload() {
+    // Clean up sandbox
+    if (this.sandboxProvider) {
+      await this.sandboxProvider.destroy();
+    }
+  }
+
+  /* ---- Settings ---- */
+
   async loadSettings() {
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData()) as AITranslatorSettings;
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData()) as PalaceSettings;
   }
 
   async saveSettings() {
     await this.saveData(this.settings);
   }
 
-  private validateSettings(): boolean {
+  /* ---- Palace Data ---- */
+
+  async loadPalaceData() {
+    const stored = await this.loadData();
+    const palaceData = stored?.[PALACE_DATA_KEY] as PalaceData | undefined;
+
+    if (palaceData) {
+      this.palaceData = palaceData;
+      this.knowledgeGraph = new KnowledgeGraph(palaceData.graph);
+    } else {
+      this.palaceData = { graph: { nodes: [], edges: [], lastUpdated: 0 }, flashcards: [] };
+      this.knowledgeGraph = new KnowledgeGraph();
+    }
+  }
+
+  async savePalaceData() {
+    if (!this.palaceData) return;
+    this.palaceData.graph = this.knowledgeGraph.getData();
+    const data = await this.loadData() || {};
+    data[PALACE_DATA_KEY] = this.palaceData;
+    await this.saveData(data);
+  }
+
+  /* ---- Skills ---- */
+
+  loadSkills() {
+    this.skillRegistry.load(this.settings.skillDirectories);
+    const count = this.skillRegistry.size;
+    if (count > 0) {
+      console.log(`Obsidian Palace: loaded ${count} skill(s)`);
+    }
+  }
+
+  /* ---- Sandbox ---- */
+
+  private initSandbox() {
+    if (this.settings.sandboxProvider === 'e2b' && this.settings.e2bApiKey) {
+      this.sandboxProvider = new E2BProvider(this.settings.e2bApiKey);
+    } else {
+      this.sandboxProvider = null;
+    }
+  }
+
+  /* ---- Knowledge Extraction ---- */
+
+  private validateLLMSettings(): boolean {
     if (!this.settings.baseUrl) {
-      new Notice('请先在设置中配置 API Base URL');
+      new Notice('Please configure API Base URL in settings');
       return false;
     }
     if (!this.settings.apiKey) {
-      new Notice('请先在设置中配置 API Key');
+      new Notice('Please configure API Key in settings');
       return false;
     }
     if (!this.settings.modelName) {
-      new Notice('请先在设置中配置模型名称');
+      new Notice('Please configure Model Name in settings');
       return false;
     }
     return true;
   }
 
-  private createTranslator(): Translator {
-    const config: TranslatorConfig = {
+  private createLLMClient(): LLMClient {
+    return new LLMClient({
       baseUrl: this.settings.baseUrl,
       apiKey: this.settings.apiKey,
       modelName: this.settings.modelName,
-      targetLang: this.settings.targetLang,
-      systemPrompt: this.settings.systemPrompt,
-      maxChunkSize: this.settings.maxChunkSize,
-    };
-    return new Translator(config);
+    });
   }
 
-  /**
-   * 生成翻译文件的路径，避免覆盖已有文件
-   */
-  private getTranslatedFilePath(originalPath: string): string {
-    const dir = originalPath.substring(0, originalPath.lastIndexOf('/'));
-    const fileName = originalPath.substring(originalPath.lastIndexOf('/') + 1);
-    const baseName = fileName.replace(/\.md$/, '');
-    const langSuffix = this.settings.targetLang === '简体中文' ? 'zh' : this.settings.targetLang;
-    const newName = `${baseName}.${langSuffix}.md`;
-    return dir ? `${dir}/${newName}` : newName;
-  }
-
-  /**
-   * 翻译当前打开的文档
-   */
-  async translateCurrentDocument() {
-    if (!this.validateSettings()) return;
+  async extractKnowledge() {
+    if (!this.validateLLMSettings()) return;
 
     const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
-    if (!activeView || !activeView.file) {
-      new Notice('请先打开一个 Markdown 文档');
+    if (!activeView?.file) {
+      new Notice('Please open a Markdown document first');
       return;
     }
 
-    await this.translateFile(activeView.file);
+    await this.extractKnowledgeFromFile(activeView.file);
   }
 
-  /**
-   * 翻译指定文件
-   */
-  async translateFile(file: TFile) {
-    if (!this.validateSettings()) return;
+  async extractKnowledgeFromFile(file: TFile) {
+    if (!this.validateLLMSettings()) return;
 
-    const translator = this.createTranslator();
     const content = await this.app.vault.cachedRead(file);
-
     if (!content.trim()) {
-      new Notice('文档内容为空，无需翻译');
+      new Notice('Document is empty');
       return;
     }
 
-    const mode = this.settings.translationMode;
-    let notice = new Notice(`正在翻译: ${file.basename}...`, 0);
+    const notice = new Notice(`Extracting knowledge from: ${file.basename}...`, 0);
 
     try {
-      const translated = await translator.translateDocument(content, (current, total) => {
-        notice.setMessage(`正在翻译: ${file.basename} (${current}/${total} 段)`);
-      });
+      const extractor = new GraphExtractor(this.createLLMClient());
+      const result = await extractor.extract(content, file.path);
 
-      if (mode === 'replace') {
-        // 替换模式：直接用翻译内容替换原文
-        await this.app.vault.modify(file, translated);
-        notice.hide();
-        new Notice('翻译完成！已替换原文');
+      // Merge into knowledge graph
+      this.knowledgeGraph.merge(result.nodes, result.edges);
 
-      } else if (mode === 'append') {
-        // 追加模式：在原文下方追加翻译内容
-        const separator = '\n\n---\n\n';
-        const langLabel = this.settings.targetLang;
-        const appendContent = `${content}${separator}## 翻译 (${langLabel})\n\n${translated}`;
-        await this.app.vault.modify(file, appendContent);
-        notice.hide();
-        new Notice('翻译完成！已追加到原文下方');
+      // Add flashcards
+      if (this.palaceData) {
+        this.palaceData.flashcards.push(...result.flashcards);
+      }
 
-      } else {
-        // newFile 模式：生成新文件
-        const newPath = this.getTranslatedFilePath(file.path);
+      await this.savePalaceData();
 
-        const existing = this.app.vault.getAbstractFileByPath(newPath);
-        if (existing instanceof TFile) {
-          await this.app.vault.modify(existing, translated);
-        } else {
-          await this.app.vault.create(newPath, translated);
-        }
+      notice.hide();
+      new Notice(
+        `Extracted: ${result.nodes.length} concepts, ${result.edges.length} connections, ${result.flashcards.length} flashcards`
+      );
 
-        notice.hide();
-        new Notice(`翻译完成! 已保存到: ${newPath}`);
-
-        const newFile = this.app.vault.getAbstractFileByPath(newPath);
-        if (newFile instanceof TFile) {
-          await this.app.workspace.getLeaf(false).openFile(newFile);
-        }
+      // Refresh Palace view if open
+      const palaceLeaves = this.app.workspace.getLeavesOfType(PALACE_VIEW_TYPE);
+      for (const leaf of palaceLeaves) {
+        (leaf.view as PalaceView).onOpen();
       }
     } catch (error) {
       notice.hide();
       const msg = error instanceof Error ? error.message : String(error);
-      new Notice(`翻译失败: ${msg}`, 8000);
-      console.error('AI Translator error:', error);
+      new Notice(`Knowledge extraction failed: ${msg}`, 8000);
     }
   }
 
-  /**
-   * 打开右侧 AI 助手面板
-   */
+  /* ---- Views ---- */
+
   async activateChatView() {
     const existing = this.app.workspace.getLeavesOfType(CHAT_VIEW_TYPE);
     if (existing.length) {
@@ -224,34 +282,129 @@ export default class AITranslatorPlugin extends Plugin {
     }
   }
 
-  /**
-   * 翻译编辑器中选中的文本
-   */
+  async activatePalaceView() {
+    const existing = this.app.workspace.getLeavesOfType(PALACE_VIEW_TYPE);
+    if (existing.length) {
+      this.app.workspace.revealLeaf(existing[0]);
+      return;
+    }
+
+    const leaf = this.app.workspace.getLeaf('tab');
+    if (leaf) {
+      await leaf.setViewState({ type: PALACE_VIEW_TYPE, active: true });
+      this.app.workspace.revealLeaf(leaf);
+    }
+  }
+
+  /* ---- Translation (kept from original) ---- */
+
+  private createTranslator(): Translator {
+    const config: TranslatorConfig = {
+      baseUrl: this.settings.baseUrl,
+      apiKey: this.settings.apiKey,
+      modelName: this.settings.modelName,
+      targetLang: this.settings.targetLang,
+      systemPrompt: this.settings.systemPrompt,
+      maxChunkSize: this.settings.maxChunkSize,
+    };
+    return new Translator(config);
+  }
+
+  private getTranslatedFilePath(originalPath: string): string {
+    const dir = originalPath.substring(0, originalPath.lastIndexOf('/'));
+    const fileName = originalPath.substring(originalPath.lastIndexOf('/') + 1);
+    const baseName = fileName.replace(/\.md$/, '');
+    const langSuffix = this.settings.targetLang === '简体中文' ? 'zh' : this.settings.targetLang;
+    const newName = `${baseName}.${langSuffix}.md`;
+    return dir ? `${dir}/${newName}` : newName;
+  }
+
+  async translateCurrentDocument() {
+    if (!this.validateLLMSettings()) return;
+
+    const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
+    if (!activeView?.file) {
+      new Notice('Please open a Markdown document first');
+      return;
+    }
+    await this.translateFile(activeView.file);
+  }
+
+  async translateFile(file: TFile) {
+    if (!this.validateLLMSettings()) return;
+
+    const translator = this.createTranslator();
+    const content = await this.app.vault.cachedRead(file);
+    if (!content.trim()) {
+      new Notice('Document is empty');
+      return;
+    }
+
+    const mode = this.settings.translationMode;
+    const notice = new Notice(`Translating: ${file.basename}...`, 0);
+
+    try {
+      const translated = await translator.translateDocument(content, (current, total) => {
+        notice.setMessage(`Translating: ${file.basename} (${current}/${total})`);
+      });
+
+      if (mode === 'replace') {
+        await this.app.vault.modify(file, translated);
+        notice.hide();
+        new Notice('Translation complete! Original replaced.');
+      } else if (mode === 'append') {
+        const separator = '\n\n---\n\n';
+        const langLabel = this.settings.targetLang;
+        const appendContent = `${content}${separator}## Translation (${langLabel})\n\n${translated}`;
+        await this.app.vault.modify(file, appendContent);
+        notice.hide();
+        new Notice('Translation complete! Appended below original.');
+      } else {
+        const newPath = this.getTranslatedFilePath(file.path);
+        const existing = this.app.vault.getAbstractFileByPath(newPath);
+        if (existing instanceof TFile) {
+          await this.app.vault.modify(existing, translated);
+        } else {
+          await this.app.vault.create(newPath, translated);
+        }
+        notice.hide();
+        new Notice(`Translation saved to: ${newPath}`);
+
+        const newFile = this.app.vault.getAbstractFileByPath(newPath);
+        if (newFile instanceof TFile) {
+          await this.app.workspace.getLeaf(false).openFile(newFile);
+        }
+      }
+    } catch (error) {
+      notice.hide();
+      const msg = error instanceof Error ? error.message : String(error);
+      new Notice(`Translation failed: ${msg}`, 8000);
+    }
+  }
+
   async translateSelection(editor: Editor) {
-    if (!this.validateSettings()) return;
+    if (!this.validateLLMSettings()) return;
 
     const selection = editor.getSelection();
     if (!selection.trim()) {
-      new Notice('请先选中要翻译的文本');
+      new Notice('Please select text to translate');
       return;
     }
 
     const translator = this.createTranslator();
-    const notice = new Notice('正在翻译选中文本...', 0);
+    const notice = new Notice('Translating selection...', 0);
 
     try {
       const translated = await translator.translateDocument(selection, (current, total) => {
-        notice.setMessage(`正在翻译选中文本 (${current}/${total} 段)`);
+        notice.setMessage(`Translating selection (${current}/${total})`);
       });
-
       editor.replaceSelection(translated);
       notice.hide();
-      new Notice('选中文本翻译完成!');
+      new Notice('Selection translated!');
     } catch (error) {
       notice.hide();
       const msg = error instanceof Error ? error.message : String(error);
-      new Notice(`翻译失败: ${msg}`, 8000);
-      console.error('AI Translator error:', error);
+      new Notice(`Translation failed: ${msg}`, 8000);
     }
   }
 }

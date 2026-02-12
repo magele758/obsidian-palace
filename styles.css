@@ -1,6 +1,6 @@
-/* AI Translator Plugin Styles */
+/* Obsidian Palace - Plugin Styles */
 
-/* 设置面板中的文本区域样式 */
+/* Settings text area */
 .setting-item textarea {
   width: 100%;
   font-family: var(--font-monospace);
@@ -152,6 +152,14 @@
   line-height: 1.5;
 }
 
+.ai-chat-welcome-skills {
+  color: var(--text-faint);
+  font-size: var(--font-ui-smaller);
+  padding: 4px 10px;
+  background: var(--background-secondary);
+  border-radius: 999px;
+}
+
 /* -- Message Bubbles -- */
 .ai-chat-msg {
   display: flex;
@@ -225,6 +233,20 @@
 .ai-chat-msg-assistant .ai-chat-msg-bubble ol {
   padding-left: 1.4em;
   margin: 4px 0;
+}
+
+/* -- Tool Status -- */
+.ai-chat-tool-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  margin-bottom: 8px;
+  background: var(--background-primary-alt);
+  border-radius: var(--radius-s);
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  border-left: 3px solid var(--interactive-accent);
 }
 
 /* -- Typing / Loading -- */
@@ -344,4 +366,330 @@
 
 .ai-chat-loading {
   animation: ai-chat-pulse 1.2s infinite;
+}
+
+
+/* ========== Memory Palace ========== */
+
+.palace-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
+/* -- Header -- */
+.palace-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  flex-shrink: 0;
+}
+
+.palace-header-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  font-size: var(--font-ui-medium);
+}
+
+.palace-header-icon {
+  display: flex;
+  color: var(--interactive-accent);
+}
+
+/* -- Tabs -- */
+.palace-tabs {
+  display: flex;
+  gap: 4px;
+}
+
+.palace-tab {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-radius: var(--radius-s);
+  border: none;
+  background: none;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.palace-tab:hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+.palace-tab-active {
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+}
+
+.palace-tab-active:hover {
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+  opacity: 0.9;
+}
+
+.palace-tab svg {
+  width: 14px;
+  height: 14px;
+}
+
+/* -- Content -- */
+.palace-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+}
+
+/* -- Empty State -- */
+.palace-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 48px 16px;
+  gap: 12px;
+}
+
+.palace-empty-icon {
+  font-size: 48px;
+}
+
+.palace-empty-title {
+  font-weight: 600;
+  font-size: var(--font-ui-medium);
+  color: var(--text-normal);
+}
+
+.palace-empty-desc {
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+  max-width: 280px;
+  line-height: 1.5;
+}
+
+/* -- Graph -- */
+.palace-graph-container {
+  width: 100%;
+  height: 300px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  overflow: hidden;
+  margin-bottom: 16px;
+  background: var(--background-primary-alt);
+}
+
+.palace-graph-svg {
+  display: block;
+}
+
+.palace-edge {
+  stroke: var(--text-faint);
+  stroke-width: 1.5;
+}
+
+.palace-graph-node circle {
+  cursor: pointer;
+  transition: r 0.15s ease;
+}
+
+.palace-graph-node:hover circle {
+  r: 11;
+}
+
+.palace-graph-label {
+  font-size: 10px;
+  fill: var(--text-muted);
+  pointer-events: none;
+}
+
+/* -- Node List -- */
+.palace-node-list h3 {
+  margin: 0 0 8px;
+  font-size: var(--font-ui-small);
+  color: var(--text-muted);
+}
+
+.palace-node-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: var(--radius-s);
+  transition: background 0.1s ease;
+}
+
+.palace-node-item:hover {
+  background: var(--background-modifier-hover);
+}
+
+.palace-node-badge {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 600;
+  flex-shrink: 0;
+  color: var(--text-on-accent);
+}
+
+.palace-type-concept { background: var(--interactive-accent); }
+.palace-type-entity { background: var(--color-green); }
+.palace-type-topic { background: var(--color-orange); }
+.palace-type-fact { background: var(--color-purple); }
+
+.palace-node-label {
+  flex: 1;
+  font-size: var(--font-ui-small);
+  color: var(--text-normal);
+}
+
+.palace-node-count {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+}
+
+/* -- Flashcard Review -- */
+.palace-review-done {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 48px 16px;
+  gap: 12px;
+}
+
+.palace-review-progress {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  text-align: center;
+  margin-bottom: 12px;
+}
+
+.palace-flashcard {
+  background: var(--background-secondary);
+  border-radius: var(--radius-l);
+  padding: 24px;
+  max-width: 500px;
+  margin: 0 auto;
+}
+
+.palace-flashcard-front,
+.palace-flashcard-back {
+  margin-bottom: 16px;
+}
+
+.palace-flashcard-label {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 6px;
+}
+
+.palace-flashcard-text {
+  font-size: var(--font-ui-medium);
+  color: var(--text-normal);
+  line-height: 1.6;
+}
+
+.palace-flashcard-back {
+  padding-top: 16px;
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.palace-show-answer-btn {
+  width: 100%;
+  padding: 10px;
+  border: none;
+  border-radius: var(--radius-m);
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+  font-size: var(--font-ui-small);
+  cursor: pointer;
+  transition: opacity 0.15s ease;
+}
+
+.palace-show-answer-btn:hover {
+  opacity: 0.85;
+}
+
+/* -- Rating Buttons -- */
+.palace-rating-buttons {
+  display: flex;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.palace-rating-btn {
+  flex: 1;
+  padding: 8px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  background: var(--background-primary);
+  color: var(--text-normal);
+  font-size: var(--font-ui-smaller);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.palace-rating-btn:hover {
+  transform: translateY(-1px);
+}
+
+.palace-rating-1:hover { background: var(--color-red); color: var(--text-on-accent); border-color: var(--color-red); }
+.palace-rating-3:hover { background: var(--color-orange); color: var(--text-on-accent); border-color: var(--color-orange); }
+.palace-rating-4:hover { background: var(--color-green); color: var(--text-on-accent); border-color: var(--color-green); }
+.palace-rating-5:hover { background: var(--interactive-accent); color: var(--text-on-accent); border-color: var(--interactive-accent); }
+
+/* -- Stats -- */
+.palace-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.palace-stat-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 16px 12px;
+  background: var(--background-secondary);
+  border-radius: var(--radius-m);
+  gap: 4px;
+}
+
+.palace-stat-icon {
+  font-size: 24px;
+}
+
+.palace-stat-value {
+  font-size: var(--font-ui-large);
+  font-weight: 700;
+  color: var(--text-normal);
+}
+
+.palace-stat-label {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+}
+
+.palace-last-update {
+  text-align: center;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
 }

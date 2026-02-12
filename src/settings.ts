@@ -1,19 +1,36 @@
 import { App, PluginSettingTab, Setting } from 'obsidian';
-import type AITranslatorPlugin from './main';
+import type ObsidianPalacePlugin from './main';
 
 export type TranslationMode = 'newFile' | 'append' | 'replace';
 
-export interface AITranslatorSettings {
+export interface PalaceSettings {
+  // LLM settings
   baseUrl: string;
   apiKey: string;
   modelName: string;
+
+  // Translation settings
   targetLang: string;
   systemPrompt: string;
   maxChunkSize: number;
   translationMode: TranslationMode;
+
+  // Agent settings
+  agentEnabled: boolean;
+  agentMaxIterations: number;
+
+  // Sandbox settings
+  sandboxProvider: 'e2b' | 'none';
+  e2bApiKey: string;
+
+  // Skill settings
+  skillDirectories: string[];
+
+  // Palace settings
+  palaceEnabled: boolean;
 }
 
-export const DEFAULT_SETTINGS: Partial<AITranslatorSettings> = {
+export const DEFAULT_SETTINGS: Partial<PalaceSettings> = {
   baseUrl: 'https://api.openai.com/v1',
   apiKey: '',
   modelName: 'gpt-4o',
@@ -21,12 +38,18 @@ export const DEFAULT_SETTINGS: Partial<AITranslatorSettings> = {
   systemPrompt: '',
   maxChunkSize: 3000,
   translationMode: 'newFile',
+  agentEnabled: true,
+  agentMaxIterations: 10,
+  sandboxProvider: 'none',
+  e2bApiKey: '',
+  skillDirectories: ['~/.claude/skills', '~/.codex/skills', '~/.agents/skills'],
+  palaceEnabled: true,
 };
 
-export class AITranslatorSettingTab extends PluginSettingTab {
-  plugin: AITranslatorPlugin;
+export class PalaceSettingTab extends PluginSettingTab {
+  plugin: ObsidianPalacePlugin;
 
-  constructor(app: App, plugin: AITranslatorPlugin) {
+  constructor(app: App, plugin: ObsidianPalacePlugin) {
     super(app, plugin);
     this.plugin = plugin;
   }
@@ -35,11 +58,14 @@ export class AITranslatorSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
 
-    containerEl.createEl('h2', { text: 'AI Translator 设置' });
+    /* ======== LLM Settings ======== */
+    containerEl.createEl('h2', { text: 'Obsidian Palace Settings' });
+
+    containerEl.createEl('h3', { text: 'LLM Configuration' });
 
     new Setting(containerEl)
       .setName('API Base URL')
-      .setDesc('OpenAI 兼容 API 的基础地址（如 https://api.openai.com/v1）')
+      .setDesc('OpenAI-compatible API endpoint')
       .addText((text) =>
         text
           .setPlaceholder('https://api.openai.com/v1')
@@ -52,7 +78,7 @@ export class AITranslatorSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('API Key')
-      .setDesc('API 密钥')
+      .setDesc('API key for the LLM service')
       .addText((text) => {
         text
           .setPlaceholder('sk-...')
@@ -65,8 +91,8 @@ export class AITranslatorSettingTab extends PluginSettingTab {
       });
 
     new Setting(containerEl)
-      .setName('模型名称')
-      .setDesc('使用的模型名称（如 gpt-4o, deepseek-chat 等）')
+      .setName('Model Name')
+      .setDesc('Model to use (e.g. gpt-4o, deepseek-chat, qwen-plus)')
       .addText((text) =>
         text
           .setPlaceholder('gpt-4o')
@@ -77,9 +103,123 @@ export class AITranslatorSettingTab extends PluginSettingTab {
           })
       );
 
+    /* ======== Agent Settings ======== */
+    containerEl.createEl('h3', { text: 'Agent' });
+
     new Setting(containerEl)
-      .setName('目标语言')
-      .setDesc('翻译的目标语言')
+      .setName('Enable Agent Mode')
+      .setDesc('Allow AI to use tools: search vault, read/write notes, execute code')
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.agentEnabled)
+          .onChange(async (value) => {
+            this.plugin.settings.agentEnabled = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName('Max Agent Iterations')
+      .setDesc('Maximum tool-calling rounds per request (default: 10)')
+      .addText((text) =>
+        text
+          .setPlaceholder('10')
+          .setValue(String(this.plugin.settings.agentMaxIterations))
+          .onChange(async (value) => {
+            const num = parseInt(value, 10);
+            if (!isNaN(num) && num > 0 && num <= 50) {
+              this.plugin.settings.agentMaxIterations = num;
+              await this.plugin.saveSettings();
+            }
+          })
+      );
+
+    /* ======== Sandbox Settings ======== */
+    containerEl.createEl('h3', { text: 'Cloud Sandbox' });
+
+    new Setting(containerEl)
+      .setName('Sandbox Provider')
+      .setDesc('Cloud sandbox for code execution')
+      .addDropdown((dropdown) =>
+        dropdown
+          .addOption('none', 'Disabled')
+          .addOption('e2b', 'E2B')
+          .setValue(this.plugin.settings.sandboxProvider)
+          .onChange(async (value) => {
+            this.plugin.settings.sandboxProvider = value as 'e2b' | 'none';
+            await this.plugin.saveSettings();
+            this.display(); // refresh to show/hide E2B key
+          })
+      );
+
+    if (this.plugin.settings.sandboxProvider === 'e2b') {
+      new Setting(containerEl)
+        .setName('E2B API Key')
+        .setDesc('Get your key at https://e2b.dev')
+        .addText((text) => {
+          text
+            .setPlaceholder('e2b_...')
+            .setValue(this.plugin.settings.e2bApiKey)
+            .onChange(async (value) => {
+              this.plugin.settings.e2bApiKey = value;
+              await this.plugin.saveSettings();
+            });
+          text.inputEl.type = 'password';
+        });
+    }
+
+    /* ======== Skill Settings ======== */
+    containerEl.createEl('h3', { text: 'Skills' });
+
+    new Setting(containerEl)
+      .setName('Skill Directories')
+      .setDesc('Directories to scan for SKILL.md files (one per line)')
+      .addTextArea((text) => {
+        text
+          .setPlaceholder('~/.claude/skills\n~/.codex/skills\n~/.agents/skills')
+          .setValue(this.plugin.settings.skillDirectories.join('\n'))
+          .onChange(async (value) => {
+            this.plugin.settings.skillDirectories = value
+              .split('\n')
+              .map(s => s.trim())
+              .filter(s => s.length > 0);
+            await this.plugin.saveSettings();
+          });
+        text.inputEl.rows = 4;
+        text.inputEl.cols = 40;
+      });
+
+    const skillCount = this.plugin.skillRegistry?.size ?? 0;
+    new Setting(containerEl)
+      .setName('Loaded Skills')
+      .setDesc(`${skillCount} skill(s) loaded`)
+      .addButton((btn) =>
+        btn.setButtonText('Reload').onClick(async () => {
+          this.plugin.loadSkills();
+          this.display();
+        })
+      );
+
+    /* ======== Memory Palace Settings ======== */
+    containerEl.createEl('h3', { text: 'Memory Palace' });
+
+    new Setting(containerEl)
+      .setName('Enable Memory Palace')
+      .setDesc('Knowledge graph extraction and spaced repetition review')
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.palaceEnabled)
+          .onChange(async (value) => {
+            this.plugin.settings.palaceEnabled = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    /* ======== Translation Settings ======== */
+    containerEl.createEl('h3', { text: 'Translation' });
+
+    new Setting(containerEl)
+      .setName('Target Language')
       .addText((text) =>
         text
           .setPlaceholder('简体中文')
@@ -91,13 +231,12 @@ export class AITranslatorSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName('翻译模式')
-      .setDesc('选择翻译结果的输出方式')
+      .setName('Translation Mode')
       .addDropdown((dropdown) =>
         dropdown
-          .addOption('newFile', '生成新文件')
-          .addOption('append', '追加到原文下方')
-          .addOption('replace', '替换原文')
+          .addOption('newFile', 'New file')
+          .addOption('append', 'Append to original')
+          .addOption('replace', 'Replace original')
           .setValue(this.plugin.settings.translationMode)
           .onChange(async (value) => {
             this.plugin.settings.translationMode = value as TranslationMode;
@@ -106,23 +245,23 @@ export class AITranslatorSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName('自定义系统提示词')
-      .setDesc('留空使用默认提示词。可用 {targetLang} 作为目标语言占位符。')
+      .setName('Custom System Prompt')
+      .setDesc('Leave empty for default. Use {targetLang} as placeholder.')
       .addTextArea((text) => {
         text
-          .setPlaceholder('留空使用默认提示词...')
+          .setPlaceholder('Leave empty for default...')
           .setValue(this.plugin.settings.systemPrompt)
           .onChange(async (value) => {
             this.plugin.settings.systemPrompt = value;
             await this.plugin.saveSettings();
           });
-        text.inputEl.rows = 6;
-        text.inputEl.cols = 50;
+        text.inputEl.rows = 4;
+        text.inputEl.cols = 40;
       });
 
     new Setting(containerEl)
-      .setName('单次翻译最大字符数')
-      .setDesc('长文档会按此大小分块翻译，建议 2000-5000')
+      .setName('Max Chunk Size')
+      .setDesc('Characters per translation chunk (2000-5000)')
       .addText((text) =>
         text
           .setPlaceholder('3000')

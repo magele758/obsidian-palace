@@ -1,9 +1,9 @@
 {
-  "id": "obsidian-ai-translator",
-  "name": "AI Translator",
-  "version": "1.0.0",
+  "id": "obsidian-palace",
+  "name": "Obsidian Palace",
+  "version": "2.0.0",
   "minAppVersion": "0.16.0",
-  "description": "使用 AI 翻译文档内容，支持 OpenAI 兼容的 API 服务",
+  "description": "AI-powered knowledge management: Agent with tool calling, Memory Palace with knowledge graph & flashcards, document translation, cloud sandbox, and skill system.",
   "author": "magele758",
-  "isDesktopOnly": false
+  "isDesktopOnly": true
 }
