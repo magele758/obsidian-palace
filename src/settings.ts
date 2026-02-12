@@ -22,6 +22,7 @@ export interface PalaceSettings {
   // Sandbox settings
   sandboxProvider: 'e2b' | 'none';
   e2bApiKey: string;
+  e2bDomain: string;
 
   // Skill settings
   skillDirectories: string[];
@@ -42,6 +43,7 @@ export const DEFAULT_SETTINGS: Partial<PalaceSettings> = {
   agentMaxIterations: 10,
   sandboxProvider: 'none',
   e2bApiKey: '',
+  e2bDomain: '',
   skillDirectories: ['~/.claude/skills', '~/.codex/skills', '~/.agents/skills'],
   palaceEnabled: true,
 };
@@ -155,7 +157,7 @@ export class PalaceSettingTab extends PluginSettingTab {
     if (this.plugin.settings.sandboxProvider === 'e2b') {
       new Setting(containerEl)
         .setName('E2B API Key')
-        .setDesc('Get your key at https://e2b.dev')
+        .setDesc('Required. Get your key at https://e2b.dev')
         .addText((text) => {
           text
             .setPlaceholder('e2b_...')
@@ -166,6 +168,19 @@ export class PalaceSettingTab extends PluginSettingTab {
             });
           text.inputEl.type = 'password';
         });
+
+      new Setting(containerEl)
+        .setName('E2B Domain')
+        .setDesc('Optional. Custom E2B API domain (leave empty for default)')
+        .addText((text) =>
+          text
+            .setPlaceholder('e2b.dev')
+            .setValue(this.plugin.settings.e2bDomain)
+            .onChange(async (value) => {
+              this.plugin.settings.e2bDomain = value;
+              await this.plugin.saveSettings();
+            })
+        );
     }
 
     /* ======== Skill Settings ======== */

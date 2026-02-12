@@ -18,11 +18,17 @@ export class E2BProvider implements SandboxProvider {
   readonly name = 'e2b';
   private apiKey: string;
   private sandboxInfo: E2BSandboxInfo | null = null;
-  private baseApiUrl = 'https://api.e2b.dev';
+  private baseApiUrl: string;
   private templateId = 'base';  // default E2B template
 
-  constructor(apiKey: string) {
+  /**
+   * @param apiKey - E2B API key (required)
+   * @param domain - Custom E2B domain (optional, defaults to 'e2b.dev')
+   */
+  constructor(apiKey: string, domain?: string) {
     this.apiKey = apiKey;
+    const resolvedDomain = domain?.replace(/\/+$/, '') || 'e2b.dev';
+    this.baseApiUrl = `https://api.${resolvedDomain}`;
   }
 
   async init(): Promise<void> {

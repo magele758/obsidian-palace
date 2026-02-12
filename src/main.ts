@@ -180,7 +180,10 @@ export default class ObsidianPalacePlugin extends Plugin {
 
   private initSandbox() {
     if (this.settings.sandboxProvider === 'e2b' && this.settings.e2bApiKey) {
-      this.sandboxProvider = new E2BProvider(this.settings.e2bApiKey);
+      this.sandboxProvider = new E2BProvider(
+        this.settings.e2bApiKey,
+        this.settings.e2bDomain || undefined
+      );
     } else {
       this.sandboxProvider = null;
     }
