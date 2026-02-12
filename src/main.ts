@@ -19,20 +19,23 @@ import { KnowledgeGraph } from './palace/knowledgeGraph';
 import { GraphExtractor } from './palace/graphExtractor';
 import { SkillRegistry } from './skills/skillRegistry';
 import { E2BProvider } from './sandbox/e2bProvider';
-import type { PalaceData, SandboxProvider } from './shared/types';
+import type { PalaceData, SandboxProvider, ChatSession } from './shared/types';
 
 const PALACE_DATA_KEY = 'palace-data';
+const CHAT_SESSIONS_KEY = 'chat-sessions';
 
 export default class ObsidianPalacePlugin extends Plugin {
   settings: PalaceSettings;
   knowledgeGraph: KnowledgeGraph;
   palaceData: PalaceData | null = null;
+  chatSessions: ChatSession[] = [];
   skillRegistry: SkillRegistry;
   sandboxProvider: SandboxProvider | null = null;
 
   async onload() {
     await this.loadSettings();
     await this.loadPalaceData();
+    await this.loadChatSessions();
 
     // Init skill registry
     this.skillRegistry = new SkillRegistry();
@@ -164,6 +167,54 @@ export default class ObsidianPalacePlugin extends Plugin {
     const data = await this.loadData() || {};
     data[PALACE_DATA_KEY] = this.palaceData;
     await this.saveData(data);
+  }
+
+  /* ---- Chat Sessions ---- */
+
+  async loadChatSessions() {
+    const stored = await this.loadData();
+    this.chatSessions = (stored?.[CHAT_SESSIONS_KEY] as ChatSession[] | undefined) || [];
+    // Sort by most recently updated
+    this.chatSessions.sort((a, b) => b.updatedAt - a.updatedAt);
+  }
+
+  async saveChatSessions() {
+    const data = await this.loadData() || {};
+    data[CHAT_SESSIONS_KEY] = this.chatSessions;
+    await this.saveData(data);
+  }
+
+  createChatSession(title?: string): ChatSession {
+    const session: ChatSession = {
+      id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+      title: title || 'New Chat',
+      messages: [],
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    };
+    this.chatSessions.unshift(session);
+    return session;
+  }
+
+  async updateChatSession(session: ChatSession) {
+    session.updatedAt = Date.now();
+    // Auto-title from first user message if still default
+    if (session.title === 'New Chat' && session.messages.length > 0) {
+      const firstUserMsg = session.messages.find(m => m.role === 'user');
+      if (firstUserMsg) {
+        session.title = firstUserMsg.content.slice(0, 50) + (firstUserMsg.content.length > 50 ? '...' : '');
+      }
+    }
+    const idx = this.chatSessions.findIndex(s => s.id === session.id);
+    if (idx >= 0) {
+      this.chatSessions[idx] = session;
+    }
+    await this.saveChatSessions();
+  }
+
+  async deleteChatSession(id: string) {
+    this.chatSessions = this.chatSessions.filter(s => s.id !== id);
+    await this.saveChatSessions();
   }
 
   /* ---- Skills ---- */

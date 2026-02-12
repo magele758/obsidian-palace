@@ -2,6 +2,22 @@
  * Shared types used across Obsidian Palace plugin
  */
 
+/* ---- Chat Sessions ---- */
+
+export interface ChatMessage {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
+export interface ChatSession {
+  id: string;
+  title: string;
+  messages: ChatMessage[];
+  docPath?: string;       // selected document path
+  createdAt: number;
+  updatedAt: number;
+}
+
 /* ---- LLM ---- */
 
 export interface LLMMessage {

@@ -1,7 +1,5 @@
 /**
- * Chat View - AI Assistant panel with Agent capabilities.
- *
- * Refactored to use AgentRunner for tool calling, skill integration, etc.
+ * Chat View - AI Assistant panel with Agent capabilities and session history.
  */
 
 import {
@@ -17,7 +15,7 @@ import { createReadNoteTool } from './agent/tools/readNote';
 import { createWriteNoteTool } from './agent/tools/writeNote';
 import { createListNotesTool } from './agent/tools/listNotes';
 import { createExecuteCodeTool } from './agent/tools/executeCode';
-import type { LLMMessage } from './shared/types';
+import type { LLMMessage, ChatSession, ChatMessage } from './shared/types';
 
 export const CHAT_VIEW_TYPE = 'ai-chat-view';
 
@@ -44,12 +42,7 @@ class DocSearchModal extends FuzzySuggestModal<TFile> {
   }
 }
 
-/* ---- Types ---- */
-interface ChatMessage {
-  role: 'user' | 'assistant';
-  content: string;
-}
-
+/* ---- Constants ---- */
 const QUICK_ACTIONS = [
   { label: '📝 Summary', prompt: 'Summarize this document concisely, listing key points.' },
   { label: '🔑 Key Concepts', prompt: 'Extract key concepts and terms from this document and explain each briefly.' },
@@ -76,16 +69,24 @@ Rules:
 /* ---- ChatView ---- */
 export class ChatView extends ItemView {
   plugin: ObsidianPalacePlugin;
-  private messages: ChatMessage[] = [];
-  private llmMessages: LLMMessage[] = [];
+
+  // Session
+  private currentSession: ChatSession | null = null;
+  private showSessionList = false;
+
+  // UI elements
+  private rootContainer: HTMLElement;
+  private sessionListEl: HTMLElement;
+  private chatPanelEl: HTMLElement;
   private messagesContainer: HTMLElement;
   private inputEl: HTMLTextAreaElement;
   private sendBtn: HTMLButtonElement;
+  private docInfoEl: HTMLElement;
   private isLoading = false;
 
+  // Doc context
   private selectedFile: TFile | null = null;
   private selectedDocContent: string | null = null;
-  private docInfoEl: HTMLElement;
   private abortController: AbortController | null = null;
 
   constructor(leaf: WorkspaceLeaf, plugin: ObsidianPalacePlugin) {
@@ -98,36 +99,159 @@ export class ChatView extends ItemView {
   getIcon() { return 'message-square'; }
 
   async onOpen() {
-    const container = this.containerEl.children[1] as HTMLElement;
-    container.empty();
-    container.addClass('ai-chat-container');
+    this.rootContainer = this.containerEl.children[1] as HTMLElement;
+    this.rootContainer.empty();
+    this.rootContainer.addClass('ai-chat-root');
+
+    // Load latest session or create new
+    if (this.plugin.chatSessions.length > 0) {
+      this.currentSession = this.plugin.chatSessions[0];
+      // Restore doc context
+      if (this.currentSession.docPath) {
+        const file = this.app.vault.getAbstractFileByPath(this.currentSession.docPath);
+        if (file instanceof TFile) {
+          this.selectedFile = file;
+          this.selectedDocContent = await this.app.vault.cachedRead(file);
+        }
+      }
+    }
+
+    this.render();
+  }
+
+  async onClose() {
+    this.abortController?.abort();
+  }
+
+  /* ========== Full Render ========== */
+
+  private render() {
+    this.rootContainer.empty();
+
+    // Session list (toggleable sidebar)
+    this.sessionListEl = this.rootContainer.createDiv({
+      cls: `ai-session-list ${this.showSessionList ? 'ai-session-list-open' : ''}`,
+    });
+    this.renderSessionList();
+
+    // Chat panel
+    this.chatPanelEl = this.rootContainer.createDiv({ cls: 'ai-chat-container' });
+    this.renderChatPanel();
+  }
+
+  /* ========== Session List ========== */
+
+  private renderSessionList() {
+    this.sessionListEl.empty();
 
     // Header
-    const header = container.createDiv({ cls: 'ai-chat-header' });
+    const header = this.sessionListEl.createDiv({ cls: 'ai-session-list-header' });
+    header.createSpan({ text: 'Chat History' });
+    const closeBtn = header.createEl('button', { cls: 'ai-chat-icon-btn' });
+    setIcon(closeBtn, 'x');
+    closeBtn.addEventListener('click', () => {
+      this.showSessionList = false;
+      this.render();
+    });
+
+    // New chat button
+    const newBtn = this.sessionListEl.createEl('button', {
+      cls: 'ai-session-new-btn',
+      text: '+ New Chat',
+    });
+    newBtn.addEventListener('click', () => this.newSession());
+
+    // Session items
+    const list = this.sessionListEl.createDiv({ cls: 'ai-session-items' });
+    for (const session of this.plugin.chatSessions) {
+      const item = list.createDiv({
+        cls: `ai-session-item ${session.id === this.currentSession?.id ? 'ai-session-item-active' : ''}`,
+      });
+
+      const info = item.createDiv({ cls: 'ai-session-item-info' });
+      info.createDiv({ cls: 'ai-session-item-title', text: session.title });
+      info.createDiv({
+        cls: 'ai-session-item-meta',
+        text: `${session.messages.length} msgs · ${this.formatTime(session.updatedAt)}`,
+      });
+
+      info.addEventListener('click', () => this.switchSession(session.id));
+
+      const delBtn = item.createEl('button', {
+        cls: 'ai-chat-icon-btn ai-session-del-btn',
+      });
+      setIcon(delBtn, 'trash-2');
+      delBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.deleteSession(session.id);
+      });
+    }
+
+    if (this.plugin.chatSessions.length === 0) {
+      list.createDiv({ cls: 'ai-session-empty', text: 'No chat history' });
+    }
+  }
+
+  private formatTime(ts: number): string {
+    const d = new Date(ts);
+    const now = new Date();
+    if (d.toDateString() === now.toDateString()) {
+      return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    }
+    return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+  }
+
+  /* ========== Chat Panel ========== */
+
+  private renderChatPanel() {
+    this.chatPanelEl.empty();
+
+    // Header
+    const header = this.chatPanelEl.createDiv({ cls: 'ai-chat-header' });
+
+    const leftActions = header.createDiv({ cls: 'ai-chat-header-left' });
+    const historyBtn = leftActions.createEl('button', {
+      cls: 'ai-chat-icon-btn',
+      attr: { 'aria-label': 'Chat history' },
+    });
+    setIcon(historyBtn, 'history');
+    historyBtn.addEventListener('click', () => {
+      this.showSessionList = !this.showSessionList;
+      this.render();
+    });
+
     const titleRow = header.createDiv({ cls: 'ai-chat-header-title' });
     const iconEl = titleRow.createSpan({ cls: 'ai-chat-header-icon' });
     setIcon(iconEl, 'bot');
-    titleRow.createSpan({ text: 'AI Assistant' });
+    titleRow.createSpan({ text: this.currentSession?.title || 'AI Assistant' });
 
     const headerActions = header.createDiv({ cls: 'ai-chat-header-actions' });
+
+    const newChatBtn = headerActions.createEl('button', {
+      cls: 'ai-chat-icon-btn',
+      attr: { 'aria-label': 'New chat' },
+    });
+    setIcon(newChatBtn, 'plus');
+    newChatBtn.addEventListener('click', () => this.newSession());
+
     const clearBtn = headerActions.createEl('button', {
       cls: 'ai-chat-icon-btn',
       attr: { 'aria-label': 'Clear chat' },
     });
     setIcon(clearBtn, 'trash-2');
-    clearBtn.addEventListener('click', () => this.clearChat());
+    clearBtn.addEventListener('click', () => this.clearCurrentChat());
 
     // Doc picker
-    this.docInfoEl = container.createDiv({ cls: 'ai-chat-doc-info' });
+    this.docInfoEl = this.chatPanelEl.createDiv({ cls: 'ai-chat-doc-info' });
     this.docInfoEl.addEventListener('click', () => this.openDocPicker());
     this.renderDocInfo();
 
     // Messages
-    this.messagesContainer = container.createDiv({ cls: 'ai-chat-messages' });
-    this.renderWelcome();
+    this.messagesContainer = this.chatPanelEl.createDiv({ cls: 'ai-chat-messages' });
+    this.restoreMessages();
 
     // Quick actions
-    const quickActions = container.createDiv({ cls: 'ai-chat-quick-actions' });
+    const quickActions = this.chatPanelEl.createDiv({ cls: 'ai-chat-quick-actions' });
     for (const action of QUICK_ACTIONS) {
       const btn = quickActions.createEl('button', {
         cls: 'ai-chat-quick-btn',
@@ -142,7 +266,7 @@ export class ChatView extends ItemView {
     }
 
     // Input
-    const inputArea = container.createDiv({ cls: 'ai-chat-input-area' });
+    const inputArea = this.chatPanelEl.createDiv({ cls: 'ai-chat-input-area' });
     this.inputEl = inputArea.createEl('textarea', {
       cls: 'ai-chat-input',
       attr: { placeholder: 'Ask a question or give a task...', rows: '3' },
@@ -160,17 +284,102 @@ export class ChatView extends ItemView {
     this.sendBtn.addEventListener('click', () => this.sendCurrentMessage());
   }
 
-  async onClose() {
-    this.abortController?.abort();
+  /**
+   * Restore messages from current session into the UI
+   */
+  private restoreMessages() {
+    if (!this.currentSession || this.currentSession.messages.length === 0) {
+      this.renderWelcome();
+      return;
+    }
+
+    this.messagesContainer.empty();
+    for (const msg of this.currentSession.messages) {
+      this.appendMessageEl(msg.role, msg.content);
+    }
+    this.scrollToBottom();
   }
 
-  /* ---------- Doc Picker ---------- */
+  /* ========== Session Management ========== */
+
+  private async newSession() {
+    const session = this.plugin.createChatSession();
+    await this.plugin.saveChatSessions();
+    this.currentSession = session;
+    this.selectedFile = null;
+    this.selectedDocContent = null;
+    this.showSessionList = false;
+    this.render();
+  }
+
+  private async switchSession(id: string) {
+    const session = this.plugin.chatSessions.find(s => s.id === id);
+    if (!session) return;
+
+    this.currentSession = session;
+    this.selectedFile = null;
+    this.selectedDocContent = null;
+
+    // Restore doc context
+    if (session.docPath) {
+      const file = this.app.vault.getAbstractFileByPath(session.docPath);
+      if (file instanceof TFile) {
+        this.selectedFile = file;
+        this.selectedDocContent = await this.app.vault.cachedRead(file);
+      }
+    }
+
+    this.showSessionList = false;
+    this.render();
+  }
+
+  private async deleteSession(id: string) {
+    await this.plugin.deleteChatSession(id);
+    if (this.currentSession?.id === id) {
+      this.currentSession = this.plugin.chatSessions[0] || null;
+      if (this.currentSession?.docPath) {
+        const file = this.app.vault.getAbstractFileByPath(this.currentSession.docPath);
+        if (file instanceof TFile) {
+          this.selectedFile = file;
+          this.selectedDocContent = await this.app.vault.cachedRead(file);
+        }
+      } else {
+        this.selectedFile = null;
+        this.selectedDocContent = null;
+      }
+    }
+    this.render();
+  }
+
+  private async clearCurrentChat() {
+    if (!this.currentSession) return;
+    this.currentSession.messages = [];
+    this.currentSession.title = 'New Chat';
+    await this.plugin.updateChatSession(this.currentSession);
+    this.render();
+  }
+
+  /**
+   * Ensure a session exists before sending a message
+   */
+  private ensureSession(): ChatSession {
+    if (!this.currentSession) {
+      this.currentSession = this.plugin.createChatSession();
+    }
+    return this.currentSession;
+  }
+
+  /* ========== Doc Picker ========== */
 
   private openDocPicker() {
     new DocSearchModal(this.app, async (file) => {
       this.selectedFile = file;
       this.selectedDocContent = await this.app.vault.cachedRead(file);
       this.renderDocInfo();
+      // Save doc association to session
+      const session = this.ensureSession();
+      session.docPath = file.path;
+      await this.plugin.updateChatSession(session);
       new Notice(`Selected: ${file.basename}`);
     }).open();
   }
@@ -190,7 +399,7 @@ export class ChatView extends ItemView {
     }
   }
 
-  /* ---------- Message Rendering ---------- */
+  /* ========== Message Rendering ========== */
 
   private renderWelcome() {
     this.messagesContainer.empty();
@@ -202,7 +411,6 @@ export class ChatView extends ItemView {
       text: 'Select a document or just ask a question. I can search your vault, execute code, and more.',
     });
 
-    // Show skill info
     const skillCount = this.plugin.skillRegistry?.size ?? 0;
     if (skillCount > 0) {
       welcome.createEl('div', {
@@ -212,7 +420,7 @@ export class ChatView extends ItemView {
     }
   }
 
-  private appendMessage(role: 'user' | 'assistant', content: string): HTMLElement {
+  private appendMessageEl(role: 'user' | 'assistant', content: string): HTMLElement {
     const welcome = this.messagesContainer.querySelector('.ai-chat-welcome');
     if (welcome) welcome.remove();
 
@@ -240,7 +448,7 @@ export class ChatView extends ItemView {
     });
   }
 
-  /* ---------- Send / Agent Response ---------- */
+  /* ========== Send / Agent Response ========== */
 
   private async sendCurrentMessage() {
     const text = this.inputEl.value.trim();
@@ -252,9 +460,18 @@ export class ChatView extends ItemView {
       return;
     }
 
+    const session = this.ensureSession();
+
     this.inputEl.value = '';
-    this.messages.push({ role: 'user', content: text });
-    this.appendMessage('user', text);
+    session.messages.push({ role: 'user', content: text });
+    this.appendMessageEl('user', text);
+
+    // Save immediately (title auto-updates)
+    await this.plugin.updateChatSession(session);
+    // Refresh session list title if visible
+    if (this.showSessionList) {
+      this.renderSessionList();
+    }
 
     await this.getAgentResponse(text);
   }
@@ -264,11 +481,12 @@ export class ChatView extends ItemView {
     this.sendBtn.disabled = true;
     this.sendBtn.addClass('ai-chat-loading');
 
-    const msgEl = this.appendMessage('assistant', '');
+    const msgEl = this.appendMessageEl('assistant', '');
     const bubble = msgEl.querySelector('.ai-chat-msg-bubble') as HTMLElement;
     bubble.empty();
     bubble.createDiv({ cls: 'ai-chat-typing', text: 'Thinking' });
 
+    const session = this.currentSession!;
     const { baseUrl, apiKey, modelName, agentEnabled, agentMaxIterations } = this.plugin.settings;
 
     try {
@@ -277,13 +495,9 @@ export class ChatView extends ItemView {
       // Build system prompt
       let systemPrompt = AGENT_SYSTEM_PROMPT;
 
-      // Add skill metadata
       const skillSummary = this.plugin.skillRegistry?.buildMetadataSummary();
-      if (skillSummary) {
-        systemPrompt += '\n\n' + skillSummary;
-      }
+      if (skillSummary) systemPrompt += '\n\n' + skillSummary;
 
-      // Add skill instructions if a match is found
       const matchedSkill = this.plugin.skillRegistry?.findMatch(userMessage);
       if (matchedSkill) {
         systemPrompt += `\n\n## Active Skill: ${matchedSkill.metadata.name}\n\n${matchedSkill.instructions}`;
@@ -292,7 +506,6 @@ export class ChatView extends ItemView {
       // Build context messages
       const contextMessages: LLMMessage[] = [];
 
-      // Document context
       if (this.selectedFile && this.selectedDocContent) {
         contextMessages.push({
           role: 'user',
@@ -304,11 +517,11 @@ export class ChatView extends ItemView {
         });
       }
 
-      // Chat history
-      for (let i = 0; i < this.messages.length - 1; i++) {
+      // Full chat history from session
+      for (let i = 0; i < session.messages.length - 1; i++) {
         contextMessages.push({
-          role: this.messages[i].role,
-          content: this.messages[i].content,
+          role: session.messages[i].role,
+          content: session.messages[i].content,
         });
       }
       contextMessages.push({ role: 'user', content: userMessage });
@@ -316,7 +529,6 @@ export class ChatView extends ItemView {
       let result: string;
 
       if (agentEnabled) {
-        // Agent mode with tool calling
         const toolRegistry = new ToolRegistry();
         toolRegistry.register(createSearchVaultTool(this.app));
         toolRegistry.register(createReadNoteTool(this.app));
@@ -354,14 +566,11 @@ export class ChatView extends ItemView {
               }
               this.scrollToBottom();
             },
-            onToolResult: (toolName, _result) => {
-              // Tool results are passed back to LLM, no need to display
-            },
+            onToolResult: () => {},
           },
           this.abortController.signal
         );
       } else {
-        // Simple streaming mode (no tools)
         this.abortController = new AbortController();
         let fullText = '';
 
@@ -380,7 +589,10 @@ export class ChatView extends ItemView {
         result = response.content || fullText;
       }
 
-      this.messages.push({ role: 'assistant', content: result });
+      // Save assistant response to session
+      session.messages.push({ role: 'assistant', content: result });
+      await this.plugin.updateChatSession(session);
+
       bubble.empty();
       await MarkdownRenderer.render(this.app, result, bubble, '', this);
       this.scrollToBottom();
@@ -395,11 +607,5 @@ export class ChatView extends ItemView {
       this.sendBtn.removeClass('ai-chat-loading');
       this.abortController = null;
     }
-  }
-
-  private clearChat() {
-    this.messages = [];
-    this.llmMessages = [];
-    this.renderWelcome();
   }
 }
