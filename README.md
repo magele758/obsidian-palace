@@ -1,20 +1,22 @@
-# AI Translator - Obsidian 插件
+# AI Translator - Obsidian Plugin
 
-使用 AI 翻译 Obsidian 中的文档内容。支持任何 OpenAI 兼容的 Chat Completion API（如 OpenAI、DeepSeek、通义千问、Moonshot 等）。
+[中文文档 (Chinese Documentation)](./readme_cn.md)
 
-## 功能
+Translate documents in Obsidian using AI. Supports any OpenAI-compatible Chat Completion API (e.g., OpenAI, DeepSeek, Qwen, Moonshot, etc.).
 
-- **翻译整篇文档** — 自动生成翻译后的新文件（如 `article.zh.md`）
-- **翻译选中文本** — 选中文本后直接替换为翻译结果
-- **右键菜单** — 文件管理器和编辑器右键菜单均可触发翻译
-- **智能分块** — 长文档自动分段翻译，避免超出 token 限制
-- **保留格式** — 翻译时保留 Markdown 格式、链接、代码块等
+## Features
 
-## 安装
+- **Translate Entire Documents** — Automatically generates a translated new file (e.g., `article.zh.md`)
+- **Translate Selected Text** — Replaces selected text with the translation directly
+- **Context Menu** — Trigger translation from both the file explorer and editor context menus
+- **Smart Chunking** — Long documents are automatically split into chunks to avoid token limits
+- **Format Preservation** — Preserves Markdown formatting, links, code blocks, etc.
 
-### 手动安装
+## Installation
 
-1. 构建插件（需要 Node.js）：
+### Manual Installation
+
+1. Build the plugin (requires Node.js):
 
 ```bash
 cd obsidian-ai-plugin
@@ -22,88 +24,88 @@ npm install
 npm run build
 ```
 
-2. 将以下 3 个文件复制到你的 Obsidian Vault 插件目录：
+2. Copy the following 3 files to your Obsidian Vault plugin directory:
 
 ```
-<你的Vault>/.obsidian/plugins/obsidian-ai-translator/
+<your-vault>/.obsidian/plugins/obsidian-ai-translator/
 ├── main.js
 ├── manifest.json
 └── styles.css
 ```
 
-3. 重启 Obsidian，在 `设置 → 第三方插件` 中启用 **AI Translator**。
+3. Restart Obsidian and enable **AI Translator** in `Settings → Community Plugins`.
 
-## 配置
+## Configuration
 
-在 `设置 → AI Translator` 中配置以下选项：
+Configure the following options in `Settings → AI Translator`:
 
-| 设置项 | 说明 | 示例 |
-|--------|------|------|
-| **API Base URL** | API 服务地址 | `https://api.openai.com/v1` |
-| **API Key** | API 密钥 | `sk-xxx...` |
-| **模型名称** | 使用的模型 | `gpt-4o`、`deepseek-chat` |
-| **目标语言** | 翻译目标语言 | `简体中文`（默认） |
-| **自定义系统提示词** | 可选，留空使用默认提示词 | — |
-| **单次翻译最大字符数** | 分块大小，建议 2000-5000 | `3000`（默认） |
+| Setting | Description | Example |
+|---------|-------------|---------|
+| **API Base URL** | API service endpoint | `https://api.openai.com/v1` |
+| **API Key** | API key | `sk-xxx...` |
+| **Model Name** | Model to use | `gpt-4o`, `deepseek-chat` |
+| **Target Language** | Translation target language | `简体中文` (default) |
+| **Custom System Prompt** | Optional, leave empty for default | — |
+| **Max Chunk Size** | Chunk size, recommended 2000-5000 | `3000` (default) |
 
-### 常见服务商配置示例
+### Common Provider Examples
 
-**OpenAI：**
+**OpenAI:**
 - Base URL: `https://api.openai.com/v1`
 - Model: `gpt-4o`
 
-**DeepSeek：**
+**DeepSeek:**
 - Base URL: `https://api.deepseek.com/v1`
 - Model: `deepseek-chat`
 
-**通义千问（阿里云）：**
+**Qwen (Alibaba Cloud):**
 - Base URL: `https://dashscope.aliyuncs.com/compatible-mode/v1`
 - Model: `qwen-plus`
 
-**Moonshot（月之暗面）：**
+**Moonshot:**
 - Base URL: `https://api.moonshot.cn/v1`
 - Model: `moonshot-v1-8k`
 
-**硅基流动（SiliconFlow）：**
+**SiliconFlow:**
 - Base URL: `https://api.siliconflow.cn/v1`
-- Model: 按需选择
+- Model: Choose as needed
 
-## 使用方法
+## Usage
 
-### 翻译整篇文档
+### Translate Entire Document
 
-1. 打开要翻译的 Markdown 文档
-2. 使用以下任一方式触发：
-   - 按 `Ctrl/Cmd + P` 打开命令面板，搜索 **"翻译当前文档"**
-   - 在编辑器中右键 → **"AI 翻译全文（生成新文件）"**
-   - 在文件管理器中右键文件 → **"AI 翻译此文档"**
-3. 等待翻译完成，翻译结果自动保存为新文件并打开
+1. Open the Markdown document you want to translate
+2. Trigger translation using any of the following:
+   - Press `Ctrl/Cmd + P` to open the command palette, search for **"Translate current document"**
+   - Right-click in the editor → **"AI Translate full text (new file)"**
+   - Right-click a file in the file explorer → **"AI Translate this document"**
+3. Wait for translation to complete; the result is automatically saved as a new file and opened
 
-### 翻译选中文本
+### Translate Selected Text
 
-1. 在编辑器中选中要翻译的文本
-2. 使用以下任一方式触发：
-   - 按 `Ctrl/Cmd + P` 打开命令面板，搜索 **"翻译选中文本"**
-   - 右键 → **"AI 翻译选中文本"**
-3. 选中的文本会被翻译结果直接替换
+1. Select the text you want to translate in the editor
+2. Trigger translation using any of the following:
+   - Press `Ctrl/Cmd + P` to open the command palette, search for **"Translate selected text"**
+   - Right-click → **"AI Translate selected text"**
+3. The selected text will be replaced with the translation
 
-## 注意事项
+## Notes
 
-- 翻译整篇文档时会生成新文件，不会修改原文件
-- 翻译选中文本会直接替换选区内容，可用 `Ctrl/Cmd + Z` 撤销
-- 长文档会自动分段翻译，可在设置中调整分块大小
-- 翻译过程中会显示进度提示（第 x/y 段）
-- 如果翻译中断，已翻译的部分不会丢失（整篇翻译模式下需重新开始）
+- Translating an entire document generates a new file without modifying the original
+- Translating selected text replaces the selection directly; use `Ctrl/Cmd + Z` to undo
+- Long documents are automatically chunked; adjust chunk size in settings
+- Translation progress is displayed (chunk x/y)
+- If translation is interrupted, already translated parts are not lost (full document mode requires restart)
 
-## 开发
+## Development
 
 ```bash
-# 安装依赖
+# Install dependencies
 npm install
 
-# 开发模式（带 sourcemap）
+# Development mode (with sourcemap)
 npm run dev
 
-# 生产构建
+# Production build
 npm run build
 ```
