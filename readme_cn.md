@@ -1,14 +1,44 @@
-# AI Translator - Obsidian 插件
+# Obsidian Palace
 
-使用 AI 翻译 Obsidian 中的文档内容。支持任何 OpenAI 兼容的 Chat Completion API（如 OpenAI、DeepSeek、通义千问、Moonshot 等）。
+AI 驱动的 Obsidian 知识管理插件。集成 AI Agent（工具调用）、记忆宫殿（知识图谱 + 间隔重复闪卡）、文档翻译、技能系统和云端沙箱。
+
+支持任何 OpenAI 兼容的 Chat Completion API（OpenAI、DeepSeek、通义千问、Moonshot、硅基流动等）。
 
 ## 功能
 
-- **翻译整篇文档** — 自动生成翻译后的新文件（如 `article.zh.md`）
-- **翻译选中文本** — 选中文本后直接替换为翻译结果
-- **右键菜单** — 文件管理器和编辑器右键菜单均可触发翻译
-- **智能分块** — 长文档自动分段翻译，避免超出 token 限制
-- **保留格式** — 翻译时保留 Markdown 格式、链接、代码块等
+### AI 助手（Agent）
+
+- **对话面板** — 侧边栏 AI 助手，支持流式输出
+- **工具调用** — Agent 可搜索笔记库、读写笔记、列出文件、执行代码
+- **文档上下文** — 选择文档作为对话的参考依据
+- **会话历史** — 持久化聊天记录，自动命名
+- **快捷操作** — 一键摘要、关键概念提取、问答生成、深度分析
+
+### 记忆宫殿
+
+- **知识图谱** — 通过 LLM 从文档中提取概念、实体、主题和事实
+- **图谱可视化** — SVG 力导向图展示知识网络
+- **闪卡复习** — SM-2 间隔重复算法，高效记忆
+- **统计面板** — 跟踪概念数、连接数、待复习卡片和学习进度
+
+### 文档翻译
+
+- **翻译整篇文档** — 生成翻译后的新文件（如 `article.zh.md`）
+- **翻译选中文本** — 选中文本直接替换为翻译结果
+- **多种模式** — 新文件、追加到原文、替换原文
+- **智能分块** — 长文档自动分段，避免超出 token 限制
+- **保留格式** — 保留 Markdown 格式、链接、代码块等
+
+### 技能系统
+
+- **自动加载** — 扫描 `~/.claude/skills`、`~/.codex/skills`、`~/.agents/skills` 中的 SKILL.md 文件
+- **技能匹配** — 根据用户消息自动激活相关技能
+- **自定义目录** — 在设置中配置额外的技能目录
+
+### 云端沙箱（E2B）
+
+- **代码执行** — 在安全的云端沙箱中运行 Python 和 JavaScript 代码
+- **E2B 集成** — 直接调用 E2B REST API（无 SDK 依赖）
 
 ## 安装
 
@@ -17,83 +47,86 @@
 1. 构建插件（需要 Node.js）：
 
 ```bash
-cd obsidian-ai-plugin
 npm install
 npm run build
 ```
 
-2. 将以下 3 个文件复制到你的 Obsidian Vault 插件目录：
+2. 将以下 3 个文件复制到 Obsidian Vault 插件目录：
 
 ```
-<你的Vault>/.obsidian/plugins/obsidian-ai-translator/
+<你的Vault>/.obsidian/plugins/obsidian-palace/
 ├── main.js
 ├── manifest.json
 └── styles.css
 ```
 
-3. 重启 Obsidian，在 `设置 → 第三方插件` 中启用 **AI Translator**。
+3. 重启 Obsidian，在 `设置 → 第三方插件` 中启用 **Obsidian Palace**。
 
 ## 配置
 
-在 `设置 → AI Translator` 中配置以下选项：
+在 `设置 → Obsidian Palace` 中配置：
+
+### LLM 配置
 
 | 设置项 | 说明 | 示例 |
 |--------|------|------|
-| **API Base URL** | API 服务地址 | `https://api.openai.com/v1` |
+| **API Base URL** | OpenAI 兼容的 API 地址 | `https://api.openai.com/v1` |
 | **API Key** | API 密钥 | `sk-xxx...` |
 | **模型名称** | 使用的模型 | `gpt-4o`、`deepseek-chat` |
-| **目标语言** | 翻译目标语言 | `简体中文`（默认） |
-| **自定义系统提示词** | 可选，留空使用默认提示词 | — |
-| **单次翻译最大字符数** | 分块大小，建议 2000-5000 | `3000`（默认） |
 
-### 常见服务商配置示例
+### 常见服务商配置
 
-**OpenAI：**
-- Base URL: `https://api.openai.com/v1`
-- Model: `gpt-4o`
+| 服务商 | Base URL | 模型 |
+|--------|----------|------|
+| OpenAI | `https://api.openai.com/v1` | `gpt-4o` |
+| DeepSeek | `https://api.deepseek.com/v1` | `deepseek-chat` |
+| 通义千问（阿里云） | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen-plus` |
+| Moonshot（月之暗面） | `https://api.moonshot.cn/v1` | `moonshot-v1-8k` |
+| 硅基流动 | `https://api.siliconflow.cn/v1` | 按需选择 |
 
-**DeepSeek：**
-- Base URL: `https://api.deepseek.com/v1`
-- Model: `deepseek-chat`
+### Agent 设置
 
-**通义千问（阿里云）：**
-- Base URL: `https://dashscope.aliyuncs.com/compatible-mode/v1`
-- Model: `qwen-plus`
+| 设置项 | 说明 | 默认值 |
+|--------|------|--------|
+| **启用 Agent 模式** | 允许 AI 使用工具 | 开启 |
+| **最大迭代次数** | 每次请求最多工具调用轮数 | `10` |
 
-**Moonshot（月之暗面）：**
-- Base URL: `https://api.moonshot.cn/v1`
-- Model: `moonshot-v1-8k`
+### 沙箱设置
 
-**硅基流动（SiliconFlow）：**
-- Base URL: `https://api.siliconflow.cn/v1`
-- Model: 按需选择
+| 设置项 | 说明 |
+|--------|------|
+| **沙箱提供商** | `禁用` 或 `E2B` |
+| **E2B API Key** | 启用 E2B 时必填 |
+| **E2B Domain** | 可选自定义域名 |
+
+### 翻译设置
+
+| 设置项 | 说明 | 默认值 |
+|--------|------|--------|
+| **目标语言** | 翻译目标语言 | `简体中文` |
+| **翻译模式** | 新文件 / 追加 / 替换 | 新文件 |
+| **自定义系统提示词** | 可选，用 `{targetLang}` 作为占位符 | — |
+| **单次最大字符数** | 每块字符数（2000-5000） | `3000` |
 
 ## 使用方法
 
-### 翻译整篇文档
+### AI 助手
 
-1. 打开要翻译的 Markdown 文档
-2. 使用以下任一方式触发：
-   - 按 `Ctrl/Cmd + P` 打开命令面板，搜索 **"翻译当前文档"**
-   - 在编辑器中右键 → **"AI 翻译全文（生成新文件）"**
-   - 在文件管理器中右键文件 → **"AI 翻译此文档"**
-3. 等待翻译完成，翻译结果自动保存为新文件并打开
+1. 点击左侧栏的**对话图标**，或运行命令 **"Open AI Assistant"**
+2. 可选：点击文档选择器选择一个文档作为上下文
+3. 输入问题或使用快捷操作按钮
+4. Agent 会在需要时自动调用工具（搜索、读写笔记等）
 
-### 翻译选中文本
+### 记忆宫殿
 
-1. 在编辑器中选中要翻译的文本
-2. 使用以下任一方式触发：
-   - 按 `Ctrl/Cmd + P` 打开命令面板，搜索 **"翻译选中文本"**
-   - 右键 → **"AI 翻译选中文本"**
-3. 选中的文本会被翻译结果直接替换
+1. 点击左侧栏的**大脑图标**，或运行命令 **"Open Memory Palace"**
+2. 提取知识：打开 .md 文件 → 运行命令 **"Extract Knowledge from Current Document"**（或右键文件 → **"Extract Knowledge"**）
+3. 查看知识图谱、复习闪卡或查看统计数据
 
-## 注意事项
+### 文档翻译
 
-- 翻译整篇文档时会生成新文件，不会修改原文件
-- 翻译选中文本会直接替换选区内容，可用 `Ctrl/Cmd + Z` 撤销
-- 长文档会自动分段翻译，可在设置中调整分块大小
-- 翻译过程中会显示进度提示（第 x/y 段）
-- 如果翻译中断，已翻译的部分不会丢失（整篇翻译模式下需重新开始）
+1. **整篇翻译**：打开 .md 文件 → `Cmd/Ctrl + P` → **"Translate Current Document"**（或右键菜单）
+2. **选中翻译**：选中文本 → `Cmd/Ctrl + P` → **"Translate Selected Text"**（或右键菜单）
 
 ## 开发
 
@@ -107,3 +140,7 @@ npm run dev
 # 生产构建
 npm run build
 ```
+
+## 许可证
+
+MIT
