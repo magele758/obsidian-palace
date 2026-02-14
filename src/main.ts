@@ -136,21 +136,39 @@ export default class ObsidianPalacePlugin extends Plugin {
     }
   }
 
-  /* ---- Settings ---- */
+  /* ---- Unified Data Layer ---- */
+  /*
+   * Plugin data structure:
+   * {
+   *   settings: PalaceSettings,
+   *   "palace-data": PalaceData,
+   *   "chat-sessions": ChatSession[]
+   * }
+   */
+
+  private async readStore(): Promise<Record<string, unknown>> {
+    return (await this.loadData()) || {};
+  }
+
+  private async writeStore(store: Record<string, unknown>) {
+    await this.saveData(store);
+  }
 
   async loadSettings() {
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData()) as PalaceSettings;
+    const store = await this.readStore();
+    const saved = (store.settings || {}) as Record<string, unknown>;
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, saved) as PalaceSettings;
   }
 
   async saveSettings() {
-    await this.saveData(this.settings);
+    const store = await this.readStore();
+    store.settings = this.settings;
+    await this.writeStore(store);
   }
 
-  /* ---- Palace Data ---- */
-
   async loadPalaceData() {
-    const stored = await this.loadData();
-    const palaceData = stored?.[PALACE_DATA_KEY] as PalaceData | undefined;
+    const store = await this.readStore();
+    const palaceData = store[PALACE_DATA_KEY] as PalaceData | undefined;
 
     if (palaceData) {
       this.palaceData = palaceData;
@@ -164,24 +182,21 @@ export default class ObsidianPalacePlugin extends Plugin {
   async savePalaceData() {
     if (!this.palaceData) return;
     this.palaceData.graph = this.knowledgeGraph.getData();
-    const data = await this.loadData() || {};
-    data[PALACE_DATA_KEY] = this.palaceData;
-    await this.saveData(data);
+    const store = await this.readStore();
+    store[PALACE_DATA_KEY] = this.palaceData;
+    await this.writeStore(store);
   }
 
-  /* ---- Chat Sessions ---- */
-
   async loadChatSessions() {
-    const stored = await this.loadData();
-    this.chatSessions = (stored?.[CHAT_SESSIONS_KEY] as ChatSession[] | undefined) || [];
-    // Sort by most recently updated
+    const store = await this.readStore();
+    this.chatSessions = (store[CHAT_SESSIONS_KEY] as ChatSession[] | undefined) || [];
     this.chatSessions.sort((a, b) => b.updatedAt - a.updatedAt);
   }
 
   async saveChatSessions() {
-    const data = await this.loadData() || {};
-    data[CHAT_SESSIONS_KEY] = this.chatSessions;
-    await this.saveData(data);
+    const store = await this.readStore();
+    store[CHAT_SESSIONS_KEY] = this.chatSessions;
+    await this.writeStore(store);
   }
 
   createChatSession(title?: string): ChatSession {

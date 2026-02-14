@@ -5,21 +5,41 @@
  * - Level 1: Metadata (name + description from YAML frontmatter) - always loaded
  * - Level 2: Instructions (SKILL.md body) - loaded on demand
  * - Level 3: Resources (scripts, references) - accessed as needed
+ *
+ * Uses Node.js fs/path/os modules safely - gracefully degrades if unavailable.
  */
 
-import * as fs from 'fs';
-import * as path from 'path';
-import * as os from 'os';
 import type { Skill, SkillMetadata } from '../shared/types';
 
-/**
- * Parse YAML frontmatter from SKILL.md content.
- * Expects format:
- * ---
- * name: skill-name
- * description: what this skill does
- * ---
- */
+/* ---- Node.js module access ---- */
+
+interface NodeModules {
+  fs: typeof import('fs');
+  path: typeof import('path');
+  os: typeof import('os');
+}
+
+let _nodeModules: NodeModules | null | undefined;
+
+function getNodeModules(): NodeModules | null {
+  if (_nodeModules !== undefined) return _nodeModules;
+  try {
+    // Use eval to prevent esbuild from bundling/externalizing these
+    const _require = (globalThis as any).require || require;
+    _nodeModules = {
+      fs: _require('fs'),
+      path: _require('path'),
+      os: _require('os'),
+    };
+  } catch {
+    _nodeModules = null;
+    console.warn('Obsidian Palace: Node.js modules not available, skills disabled');
+  }
+  return _nodeModules;
+}
+
+/* ---- YAML Frontmatter Parser ---- */
+
 function parseFrontmatter(content: string): { metadata: SkillMetadata; body: string } | null {
   const match = content.match(/^---\s*\n([\s\S]*?)\n---\s*\n([\s\S]*)$/);
   if (!match) return null;
@@ -27,7 +47,6 @@ function parseFrontmatter(content: string): { metadata: SkillMetadata; body: str
   const frontmatter = match[1];
   const body = match[2];
 
-  // Simple YAML parser for name and description
   let name = '';
   let description = '';
 
@@ -47,38 +66,42 @@ function parseFrontmatter(content: string): { metadata: SkillMetadata; body: str
   };
 }
 
-/**
- * Resolve ~ to home directory and normalize path
- */
+/* ---- Path Utils ---- */
+
 function expandPath(p: string): string {
+  const node = getNodeModules();
+  if (!node) return p;
+
   if (p.startsWith('~')) {
-    return path.join(os.homedir(), p.slice(1));
+    return node.path.join(node.os.homedir(), p.slice(1));
   }
-  return path.resolve(p);
+  return node.path.resolve(p);
 }
 
-/**
- * Scan a single directory for skill subdirectories containing SKILL.md
- */
+/* ---- Directory Scanner ---- */
+
 function scanDirectory(dirPath: string): Skill[] {
+  const node = getNodeModules();
+  if (!node) return [];
+
   const expanded = expandPath(dirPath);
   const skills: Skill[] = [];
 
-  if (!fs.existsSync(expanded)) return skills;
+  if (!node.fs.existsSync(expanded)) return skills;
 
   try {
-    const entries = fs.readdirSync(expanded, { withFileTypes: true });
+    const entries = node.fs.readdirSync(expanded, { withFileTypes: true });
 
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
 
-      const skillDir = path.join(expanded, entry.name);
-      const skillFile = path.join(skillDir, 'SKILL.md');
+      const skillDir = node.path.join(expanded, entry.name);
+      const skillFile = node.path.join(skillDir, 'SKILL.md');
 
-      if (!fs.existsSync(skillFile)) continue;
+      if (!node.fs.existsSync(skillFile)) continue;
 
       try {
-        const content = fs.readFileSync(skillFile, 'utf-8');
+        const content = node.fs.readFileSync(skillFile, 'utf-8');
         const parsed = parseFrontmatter(content);
         if (!parsed) continue;
 
@@ -86,7 +109,7 @@ function scanDirectory(dirPath: string): Skill[] {
           metadata: parsed.metadata,
           instructions: parsed.body,
           directory: skillDir,
-          source: path.join(dirPath, entry.name),
+          source: node.path.join(dirPath, entry.name),
         });
       } catch {
         // Skip invalid skill files
@@ -99,9 +122,8 @@ function scanDirectory(dirPath: string): Skill[] {
   return skills;
 }
 
-/**
- * Default skill directories to scan
- */
+/* ---- Public API ---- */
+
 export const DEFAULT_SKILL_DIRECTORIES = [
   '~/.claude/skills',
   '~/.codex/skills',
@@ -109,9 +131,12 @@ export const DEFAULT_SKILL_DIRECTORIES = [
 ];
 
 /**
- * Load all skills from the specified directories
+ * Load all skills from the specified directories.
+ * Returns empty array if Node.js modules are not available.
  */
 export function loadAllSkills(directories?: string[]): Skill[] {
+  if (!getNodeModules()) return [];
+
   const dirs = directories || DEFAULT_SKILL_DIRECTORIES;
   const allSkills: Skill[] = [];
   const seen = new Set<string>();
@@ -119,7 +144,6 @@ export function loadAllSkills(directories?: string[]): Skill[] {
   for (const dir of dirs) {
     const skills = scanDirectory(dir);
     for (const skill of skills) {
-      // Deduplicate by name
       if (!seen.has(skill.metadata.name)) {
         seen.add(skill.metadata.name);
         allSkills.push(skill);
@@ -130,25 +154,22 @@ export function loadAllSkills(directories?: string[]): Skill[] {
   return allSkills;
 }
 
-/**
- * Read the full SKILL.md instructions for a skill (Level 2 loading)
- */
 export function loadSkillInstructions(skill: Skill): string {
   return skill.instructions;
 }
 
-/**
- * List files in a skill's directory (Level 3 resources)
- */
 export function listSkillResources(skill: Skill): string[] {
+  const node = getNodeModules();
+  if (!node) return [];
+
   try {
     const files: string[] = [];
     const walk = (dir: string, prefix: string) => {
-      const entries = fs.readdirSync(dir, { withFileTypes: true });
+      const entries = node.fs.readdirSync(dir, { withFileTypes: true });
       for (const entry of entries) {
         const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
         if (entry.isDirectory()) {
-          walk(path.join(dir, entry.name), rel);
+          walk(node.path.join(dir, entry.name), rel);
         } else {
           files.push(rel);
         }
@@ -161,15 +182,14 @@ export function listSkillResources(skill: Skill): string[] {
   }
 }
 
-/**
- * Read a specific resource file from a skill directory
- */
 export function readSkillResource(skill: Skill, relativePath: string): string | null {
+  const node = getNodeModules();
+  if (!node) return null;
+
   try {
-    const fullPath = path.join(skill.directory, relativePath);
-    // Security: ensure the path is within the skill directory
+    const fullPath = node.path.join(skill.directory, relativePath);
     if (!fullPath.startsWith(skill.directory)) return null;
-    return fs.readFileSync(fullPath, 'utf-8');
+    return node.fs.readFileSync(fullPath, 'utf-8');
   } catch {
     return null;
   }
