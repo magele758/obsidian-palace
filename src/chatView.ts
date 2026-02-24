@@ -58,13 +58,15 @@ Capabilities:
 - Execute code in a cloud sandbox (if configured)
 - Answer questions based on document context
 - Extract knowledge and build knowledge graphs
+- Search entire vault with semantic search (if Vault QA is enabled)
 
 Rules:
 1. Use tools proactively when needed to answer questions or complete tasks.
 2. When a document is selected, base your answers on its content first.
 3. Use Markdown formatting in responses.
 4. Be concise and accurate.
-5. If you need more information, search the vault or ask the user.`;
+5. If you need more information, search the vault or ask the user.
+6. For questions about the entire knowledge base, use search_vault_qa if available.`;
 
 /* ---- ChatView ---- */
 export class ChatView extends ItemView {
@@ -535,6 +537,14 @@ export class ChatView extends ItemView {
         toolRegistry.register(createWriteNoteTool(this.app));
         toolRegistry.register(createListNotesTool(this.app));
         toolRegistry.register(createExecuteCodeTool(this.plugin.sandboxProvider));
+
+        // Register Vault QA tools if available
+        if (this.plugin.settings.vaultQAEnabled && this.plugin.getVaultQATools) {
+          const tools = this.plugin.getVaultQATools();
+          for (const tool of tools) {
+            toolRegistry.register(tool);
+          }
+        }
 
         const agent = new AgentRunner({
           llmClient,

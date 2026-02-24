@@ -6,6 +6,26 @@
 import { requestUrl } from 'obsidian';
 import type { LLMMessage, LLMResponse, LLMStreamDelta, ToolDefinition, ToolCall } from './types';
 
+/* ---- Embedding Types ---- */
+
+export interface Embedding {
+  vector: number[];
+  text: string;
+  tokens?: number;
+}
+
+export interface EmbeddingResponse {
+  data: Array<{
+    embedding: number[];
+    index: number;
+  }>;
+  model: string;
+  usage?: {
+    prompt_tokens: number;
+    total_tokens: number;
+  };
+}
+
 export interface LLMClientConfig {
   baseUrl: string;
   apiKey: string;
@@ -202,5 +222,52 @@ export class LLMClient {
     if (msg.tool_call_id) result.tool_call_id = msg.tool_call_id;
     if (msg.tool_calls) result.tool_calls = msg.tool_calls;
     return result;
+  }
+
+  /* ---- Embedding Methods ---- */
+
+  /**
+   * Create embedding for a single text
+   */
+  async createEmbedding(text: string, model?: string): Promise<Embedding> {
+    const result = await this.createEmbeddings([text], model);
+    return result[0];
+  }
+
+  /**
+   * Create embeddings for multiple texts in batch
+   */
+  async createEmbeddings(texts: string[], model?: string): Promise<Embedding[]> {
+    const url = this.config.baseUrl.replace(/\/+$/, '') + '/embeddings';
+
+    const body: Record<string, unknown> = {
+      model: model || this.config.modelName.replace(/^(gpt|chat)/, 'text-embedding'),
+      input: texts,
+    };
+
+    const response = await requestUrl({
+      url,
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${this.config.apiKey}`,
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (response.status !== 200) {
+      throw new Error(`Embedding API request failed (${response.status}): ${response.text}`);
+    }
+
+    const data = response.json as EmbeddingResponse;
+
+    // Sort by index to preserve order
+    const sortedData = data.data.sort((a, b) => a.index - b.index);
+
+    return sortedData.map((item, idx) => ({
+      vector: item.embedding,
+      text: texts[idx],
+      tokens: data.usage?.total_tokens ? Math.floor(data.usage.total_tokens / texts.length) : undefined,
+    }));
   }
 }

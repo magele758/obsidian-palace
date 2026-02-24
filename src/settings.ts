@@ -1,4 +1,4 @@
-import { App, PluginSettingTab, Setting } from 'obsidian';
+import { App, Notice, PluginSettingTab, Setting } from 'obsidian';
 import type ObsidianPalacePlugin from './main';
 
 export type TranslationMode = 'newFile' | 'append' | 'replace';
@@ -29,6 +29,12 @@ export interface PalaceSettings {
 
   // Palace settings
   palaceEnabled: boolean;
+
+  // Vault QA settings (text-based search only)
+  vaultQAEnabled: boolean;
+  obsidianWeight: number;
+  grepWeight: number;
+  vaultQAMaxResults: number;
 }
 
 export const DEFAULT_SETTINGS: Partial<PalaceSettings> = {
@@ -46,6 +52,11 @@ export const DEFAULT_SETTINGS: Partial<PalaceSettings> = {
   e2bDomain: '',
   skillDirectories: ['~/.claude/skills', '~/.codex/skills', '~/.agents/skills'],
   palaceEnabled: true,
+  // Vault QA defaults (text-based search)
+  vaultQAEnabled: false,
+  obsidianWeight: 0.6,
+  grepWeight: 0.4,
+  vaultQAMaxResults: 10,
 };
 
 export class PalaceSettingTab extends PluginSettingTab {
@@ -289,5 +300,81 @@ export class PalaceSettingTab extends PluginSettingTab {
             }
           })
       );
+
+    /* ======== Vault QA Settings ======== */
+    containerEl.createEl('h3', { text: 'Vault Knowledge Base QA' });
+
+    new Setting(containerEl)
+      .setName('Enable Vault QA')
+      .setDesc('Whole-vault text-based search using Obsidian and grep')
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.vaultQAEnabled)
+          .onChange(async (value) => {
+            this.plugin.settings.vaultQAEnabled = value;
+            await this.plugin.saveSettings();
+            // Toggle Vault QA components
+            if (this.plugin.toggleVaultQA) {
+              await this.plugin.toggleVaultQA(value);
+            }
+            this.display();
+          })
+      );
+
+    if (this.plugin.settings.vaultQAEnabled) {
+      containerEl.createEl('h4', { text: 'Search Weights', cls: 'setting-item-heading' });
+      containerEl.createEl('p', {
+        text: 'Adjust the weight of each search method. Weights are relative to each other.',
+        cls: 'setting-item-description',
+      });
+
+      new Setting(containerEl)
+        .setName('Obsidian Search Weight')
+        .setDesc('Weight for Obsidian built-in search (0-1)')
+        .addText((text) =>
+          text
+            .setPlaceholder('0.6')
+            .setValue(String(this.plugin.settings.obsidianWeight))
+            .onChange(async (value) => {
+              const num = parseFloat(value);
+              if (!isNaN(num) && num >= 0 && num <= 1) {
+                this.plugin.settings.obsidianWeight = num;
+                await this.plugin.saveSettings();
+              }
+            })
+        );
+
+      new Setting(containerEl)
+        .setName('Grep Search Weight')
+        .setDesc('Weight for keyword/regex matching (0-1)')
+        .addText((text) =>
+          text
+            .setPlaceholder('0.4')
+            .setValue(String(this.plugin.settings.grepWeight))
+            .onChange(async (value) => {
+              const num = parseFloat(value);
+              if (!isNaN(num) && num >= 0 && num <= 1) {
+                this.plugin.settings.grepWeight = num;
+                await this.plugin.saveSettings();
+              }
+            })
+        );
+
+      new Setting(containerEl)
+        .setName('Max Results')
+        .setDesc('Maximum number of search results to return (default: 10)')
+        .addText((text) =>
+          text
+            .setPlaceholder('10')
+            .setValue(String(this.plugin.settings.vaultQAMaxResults))
+            .onChange(async (value) => {
+              const num = parseInt(value, 10);
+              if (!isNaN(num) && num > 0) {
+                this.plugin.settings.vaultQAMaxResults = num;
+                await this.plugin.saveSettings();
+              }
+            })
+        );
+    }
   }
 }

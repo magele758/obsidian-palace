@@ -19,7 +19,13 @@ import { KnowledgeGraph } from './palace/knowledgeGraph';
 import { GraphExtractor } from './palace/graphExtractor';
 import { SkillRegistry } from './skills/skillRegistry';
 import { E2BProvider } from './sandbox/e2bProvider';
-import type { PalaceData, SandboxProvider, ChatSession } from './shared/types';
+import type { PalaceData, SandboxProvider, ChatSession, AgentTool } from './shared/types';
+
+// Vault QA imports (text-based search only)
+import {
+  HybridSearch,
+  createVaultQATools,
+} from './vault-qa';
 
 const PALACE_DATA_KEY = 'palace-data';
 const CHAT_SESSIONS_KEY = 'chat-sessions';
@@ -32,6 +38,13 @@ export default class ObsidianPalacePlugin extends Plugin {
   skillRegistry: SkillRegistry;
   sandboxProvider: SandboxProvider | null = null;
 
+  // Vault QA components (text-based search only)
+  hybridSearch: HybridSearch | null = null;
+
+  // Callback for settings UI
+  getVaultQATools?: () => AgentTool[];
+  toggleVaultQA?: (enabled: boolean) => Promise<void>;
+
   async onload() {
     await this.loadSettings();
     await this.loadPalaceData();
@@ -43,6 +56,25 @@ export default class ObsidianPalacePlugin extends Plugin {
 
     // Init sandbox if configured
     this.initSandbox();
+
+    // Init Vault QA if enabled
+    if (this.settings.vaultQAEnabled) {
+      console.log('Obsidian Palace: Vault QA is enabled, initializing...');
+      this.initVaultQA();
+    } else {
+      console.log('Obsidian Palace: Vault QA is disabled in settings');
+    }
+
+    // Setup toggle callback for settings
+    this.toggleVaultQA = async (enabled: boolean) => {
+      if (enabled && !this.hybridSearch) {
+        console.log('Obsidian Palace: Enabling Vault QA...');
+        this.initVaultQA();
+      } else if (!enabled && this.hybridSearch) {
+        console.log('Obsidian Palace: Disabling Vault QA...');
+        this.cleanupVaultQA();
+      }
+    };
 
     // Settings tab
     this.addSettingTab(new PalaceSettingTab(this.app, this));
@@ -134,6 +166,9 @@ export default class ObsidianPalacePlugin extends Plugin {
     if (this.sandboxProvider) {
       await this.sandboxProvider.destroy();
     }
+
+    // Clean up Vault QA
+    this.cleanupVaultQA();
   }
 
   /* ---- Unified Data Layer ---- */
@@ -475,5 +510,45 @@ export default class ObsidianPalacePlugin extends Plugin {
       const msg = error instanceof Error ? error.message : String(error);
       new Notice(`Translation failed: ${msg}`, 8000);
     }
+  }
+
+  /* ---- Vault QA Methods (Text-based search only) ---- */
+
+  /**
+   * Initialize Vault QA components
+   */
+  private initVaultQA(): void {
+    try {
+      console.log('Obsidian Palace: Initializing text-based Vault QA...');
+
+      // Initialize hybrid search (Obsidian + grep only)
+      this.hybridSearch = new HybridSearch(this.app, {
+        obsidianWeight: this.settings.obsidianWeight,
+        grepWeight: this.settings.grepWeight,
+        maxResults: this.settings.vaultQAMaxResults,
+      });
+
+      // Set up callback for chat view
+      this.getVaultQATools = (): AgentTool[] => {
+        if (!this.hybridSearch) return [];
+        return createVaultQATools(this.app, this.hybridSearch);
+      };
+
+      console.log('Obsidian Palace: Vault QA initialized!');
+      new Notice('Vault QA ready');
+    } catch (err) {
+      console.error('Obsidian Palace: Failed to init Vault QA', err);
+      const msg = err instanceof Error ? err.message : String(err);
+      new Notice(`Vault QA init failed: ${msg}`, 8000);
+      this.cleanupVaultQA();
+    }
+  }
+
+  /**
+   * Clean up Vault QA components
+   */
+  private cleanupVaultQA(): void {
+    this.hybridSearch = null;
+    this.getVaultQATools = undefined;
   }
 }
