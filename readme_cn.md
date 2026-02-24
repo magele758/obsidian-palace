@@ -1,146 +1,255 @@
 # Obsidian Palace
 
-AI 驱动的 Obsidian 知识管理插件。集成 AI Agent（工具调用）、记忆宫殿（知识图谱 + 间隔重复闪卡）、文档翻译、技能系统和云端沙箱。
+[English](./README.md)
 
-支持任何 OpenAI 兼容的 Chat Completion API（OpenAI、DeepSeek、通义千问、Moonshot、硅基流动等）。
+> AI 驱动的 Obsidian 知识管理插件
 
-## 功能
+将你的 Obsidian 笔记库转变为智能知识库，具备 AI Agent 能力、记忆宫殿（知识图谱 + 闪卡）、文档翻译、技能系统和云端沙箱。
 
-### AI 助手（Agent）
+支持**任何 OpenAI 兼容 API**（OpenAI、DeepSeek、通义千问、Moonshot、硅基流动等）
 
-- **对话面板** — 侧边栏 AI 助手，支持流式输出
-- **工具调用** — Agent 可搜索笔记库、读写笔记、列出文件、执行代码
-- **文档上下文** — 选择文档作为对话的参考依据
-- **会话历史** — 持久化聊天记录，自动命名
-- **快捷操作** — 一键摘要、关键概念提取、问答生成、深度分析
+---
 
-### 记忆宫殿
+## 功能一览
 
-- **知识图谱** — 通过 LLM 从文档中提取概念、实体、主题和事实
-- **图谱可视化** — SVG 力导向图展示知识网络
-- **闪卡复习** — SM-2 间隔重复算法，高效记忆
-- **统计面板** — 跟踪概念数、连接数、待复习卡片和学习进度
+| 功能 | 说明 |
+|------|------|
+| **AI Agent** | 与笔记库对话，支持工具调用（搜索、读写笔记、执行代码） |
+| **记忆宫殿** | 提取知识图谱，间隔重复闪卡复习 |
+| **文档翻译** | 翻译文档，保留格式 |
+| **技能系统** | 自动加载 `.claude/skills` 目录下的自定义技能 |
+| **云端沙箱** | 通过 E2B 安全执行 Python/JavaScript 代码 |
+| **笔记库问答** | 使用 Obsidian + Grep 混合搜索整个笔记库 |
 
-### 文档翻译
+---
 
-- **翻译整篇文档** — 生成翻译后的新文件（如 `article.zh.md`）
-- **翻译选中文本** — 选中文本直接替换为翻译结果
-- **多种模式** — 新文件、追加到原文、替换原文
-- **智能分块** — 长文档自动分段，避免超出 token 限制
-- **保留格式** — 保留 Markdown 格式、链接、代码块等
+## 架构图
 
-### 技能系统
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                        Obsidian Palace                               │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                      │
+│  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐          │
+│  │  对话面板    │    │  记忆宫殿    │    │   翻译器     │          │
+│  │  (侧边栏)    │    │   (标签页)   │    │  (编辑器)    │          │
+│  └──────┬───────┘    └──────┬───────┘    └──────┬───────┘          │
+│         │                   │                   │                   │
+│         └───────────────────┼───────────────────┘                   │
+│                             ▼                                       │
+│                    ┌────────────────┐                               │
+│                    │   LLM 客户端   │◄──── OpenAI 兼容 API          │
+│                    │   (流式输出)   │                               │
+│                    └───────┬────────┘                               │
+│                            │                                        │
+│         ┌──────────────────┼──────────────────┐                    │
+│         ▼                  ▼                  ▼                    │
+│  ┌─────────────┐   ┌─────────────┐   ┌─────────────┐              │
+│  │ Agent 运行器 │   │ 图谱提取器  │   │   分块器    │              │
+│  └──────┬──────┘   └─────────────┘   └─────────────┘              │
+│         │                                                          │
+│         ▼                                                          │
+│  ┌─────────────────────────────────────────────────────┐          │
+│  │                    工具注册表                        │          │
+│  ├──────────┬──────────┬──────────┬──────────┬────────┤          │
+│  │  搜索    │  读取    │  写入    │  列出    │ 执行   │          │
+│  │  笔记库  │  笔记    │  笔记    │  笔记    │ 代码   │          │
+│  └──────────┴──────────┴──────────┴──────────┴────────┘          │
+│                                                                     │
+│  ┌─────────────────────────────────────────────────────┐          │
+│  │              笔记库问答（文本搜索）                   │          │
+│  ├─────────────────────┬───────────────────────────────┤          │
+│  │    Obsidian 搜索    │        Grep 搜索              │          │
+│  │  (文件名+内容匹配)   │     (正则/关键词)             │          │
+│  └─────────────────────┴───────────────────────────────┘          │
+│                                                                     │
+└─────────────────────────────────────────────────────────────────────┘
+```
 
-- **自动加载** — 扫描 `~/.claude/skills`、`~/.codex/skills`、`~/.agents/skills` 中的 SKILL.md 文件
-- **技能匹配** — 根据用户消息自动激活相关技能
-- **自定义目录** — 在设置中配置额外的技能目录
+### 数据流
 
-### 云端沙箱（E2B）
+```
+用户输入 ──► 技能匹配 ──► Agent 运行器 ──► LLM API
+                              │
+            ┌─────────────────┼─────────────────┐
+            ▼                 ▼                 ▼
+       工具: 搜索        工具: 读取        工具: 写入
+            │                 │                 │
+            └─────────────────┼─────────────────┘
+                              ▼
+                        Obsidian 笔记库
+```
 
-- **代码执行** — 在安全的云端沙箱中运行 Python 和 JavaScript 代码
-- **E2B 集成** — 直接调用 E2B REST API（无 SDK 依赖）
+---
 
 ## 安装
 
+### 环境要求
+
+- Node.js 18+
+- Obsidian 0.16.0+
+
 ### 手动安装
 
-1. 构建插件（需要 Node.js）：
-
 ```bash
+# 克隆并构建
+git clone https://github.com/magele758/obsidian-palace.git
+cd obsidian-palace
 npm install
 npm run build
 ```
 
-2. 将以下 3 个文件复制到 Obsidian Vault 插件目录：
+复制以下文件到你的笔记库：
 
 ```
-<你的Vault>/.obsidian/plugins/obsidian-palace/
+<你的笔记库>/.obsidian/plugins/obsidian-ai-translate/
 ├── main.js
 ├── manifest.json
 └── styles.css
 ```
 
-3. 重启 Obsidian，在 `设置 → 第三方插件` 中启用 **Obsidian Palace**。
+重启 Obsidian，在设置 → 第三方插件中启用 **Obsidian Palace**。
+
+---
 
 ## 配置
 
-在 `设置 → Obsidian Palace` 中配置：
-
-### LLM 配置
+### LLM 设置
 
 | 设置项 | 说明 | 示例 |
 |--------|------|------|
 | **API Base URL** | OpenAI 兼容的 API 地址 | `https://api.openai.com/v1` |
 | **API Key** | API 密钥 | `sk-xxx...` |
-| **模型名称** | 使用的模型 | `gpt-4o`、`deepseek-chat` |
+| **模型名称** | 模型标识符 | `gpt-4o`、`deepseek-chat` |
 
-### 常见服务商配置
+### 服务商示例
 
 | 服务商 | Base URL | 模型 |
 |--------|----------|------|
-| OpenAI | `https://api.openai.com/v1` | `gpt-4o` |
-| DeepSeek | `https://api.deepseek.com/v1` | `deepseek-chat` |
-| 通义千问（阿里云） | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen-plus` |
-| Moonshot（月之暗面） | `https://api.moonshot.cn/v1` | `moonshot-v1-8k` |
-| 硅基流动 | `https://api.siliconflow.cn/v1` | 按需选择 |
+| OpenAI | `https://api.openai.com/v1` | `gpt-4o`、`gpt-4o-mini` |
+| DeepSeek | `https://api.deepseek.com/v1` | `deepseek-chat`、`deepseek-reasoner` |
+| 通义千问 | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen-plus`、`qwen-max` |
+| Moonshot | `https://api.moonshot.cn/v1` | `moonshot-v1-8k` |
+| 硅基流动 | `https://api.siliconflow.cn/v1` | 多种模型可选 |
 
 ### Agent 设置
 
 | 设置项 | 说明 | 默认值 |
 |--------|------|--------|
-| **启用 Agent 模式** | 允许 AI 使用工具 | 开启 |
-| **最大迭代次数** | 每次请求最多工具调用轮数 | `10` |
+| 启用 Agent 模式 | 允许 AI 使用工具 | 开启 |
+| 最大迭代次数 | 每次请求工具调用轮数 | 10 |
 
 ### 沙箱设置
 
 | 设置项 | 说明 |
 |--------|------|
-| **沙箱提供商** | `禁用` 或 `E2B` |
-| **E2B API Key** | 启用 E2B 时必填 |
-| **E2B Domain** | 可选自定义域名 |
+| 沙箱提供商 | `禁用` 或 `E2B` |
+| E2B API Key | 启用代码执行时必填 |
+| E2B Domain | 可选自定义域名 |
 
-### 翻译设置
+### 笔记库问答设置
 
 | 设置项 | 说明 | 默认值 |
 |--------|------|--------|
-| **目标语言** | 翻译目标语言 | `简体中文` |
-| **翻译模式** | 新文件 / 追加 / 替换 | 新文件 |
-| **自定义系统提示词** | 可选，用 `{targetLang}` 作为占位符 | — |
-| **单次最大字符数** | 每块字符数（2000-5000） | `3000` |
+| 启用笔记库问答 | 全库文本搜索 | 关闭 |
+| Obsidian 权重 | Obsidian 搜索权重 | 0.6 |
+| Grep 权重 | 关键词匹配权重 | 0.4 |
+| 最大结果数 | 返回结果上限 | 10 |
 
-## 使用方法
+---
+
+## 使用指南
 
 ### AI 助手
 
-1. 点击左侧栏的**对话图标**，或运行命令 **"Open AI Assistant"**
-2. 可选：点击文档选择器选择一个文档作为上下文
-3. 输入问题或使用快捷操作按钮
-4. Agent 会在需要时自动调用工具（搜索、读写笔记等）
+1. 通过**左侧图标**或命令 `Open AI Assistant` 打开
+2. 选择文档（可选）作为上下文
+3. 提问或使用快捷操作：
+   - 📝 **摘要** — 简洁文档总结
+   - 🔑 **关键概念** — 提取主要概念
+   - ❓ **生成问答** — 创建问答对
+   - 🔍 **深度分析** — 全面文档分析
+   - 🧠 **提取知识** — 添加到记忆宫殿
 
 ### 记忆宫殿
 
-1. 点击左侧栏的**大脑图标**，或运行命令 **"Open Memory Palace"**
-2. 提取知识：打开 .md 文件 → 运行命令 **"Extract Knowledge from Current Document"**（或右键文件 → **"Extract Knowledge"**）
-3. 查看知识图谱、复习闪卡或查看统计数据
+1. 通过**大脑图标**或命令 `Open Memory Palace` 打开
+2. 从文档提取知识：
+   - 命令：`Extract Knowledge from Current Document`
+   - 右键菜单：Extract Knowledge
+3. 功能：
+   - **图谱视图** — 交互式知识网络
+   - **闪卡** — SM-2 间隔重复复习
+   - **统计** — 跟踪学习进度
 
 ### 文档翻译
 
-1. **整篇翻译**：打开 .md 文件 → `Cmd/Ctrl + P` → **"Translate Current Document"**（或右键菜单）
-2. **选中翻译**：选中文本 → `Cmd/Ctrl + P` → **"Translate Selected Text"**（或右键菜单）
+1. **整篇翻译**：命令 `Translate Current Document`
+2. **选中翻译**：选中文本 → 命令 `Translate Selected Text`
+3. 模式：新文件、追加或替换
+
+### 笔记库问答
+
+启用后，AI agent 可搜索整个笔记库：
+
+```
+用户: "找出所有关于机器学习的笔记"
+
+Agent 使用: search_vault_qa 工具
+         └── Obsidian 搜索 (文件名 + 内容匹配)
+         └── Grep 搜索 (关键词/正则匹配)
+         └── 混合排序 → 返回最佳结果
+```
+
+---
 
 ## 开发
 
 ```bash
-# 安装依赖
-npm install
-
 # 开发模式（带 sourcemap）
 npm run dev
 
 # 生产构建
 npm run build
+
+# 监听模式
+npm run dev -- --watch
 ```
+
+### 项目结构
+
+```
+src/
+├── main.ts              # 插件入口
+├── settings.ts          # 设置界面
+├── chatView.ts          # AI 对话面板
+├── translator.ts        # 文档翻译
+├── shared/
+│   ├── types.ts         # 类型定义
+│   └── llmClient.ts     # OpenAI 兼容客户端
+├── agent/
+│   ├── agentRunner.ts   # 多步推理
+│   ├── toolRegistry.ts  # 工具管理
+│   └── tools/           # Agent 工具
+├── palace/
+│   ├── palaceView.ts    # 记忆宫殿界面
+│   ├── knowledgeGraph.ts
+│   ├── graphExtractor.ts
+│   └── reviewScheduler.ts
+├── skills/
+│   ├── skillRegistry.ts # 技能匹配
+│   └── skillLoader.ts
+├── sandbox/
+│   └── e2bProvider.ts   # E2B 集成
+└── vault-qa/
+    ├── hybridSearch.ts  # 文本搜索
+    ├── obsidianSearch.ts
+    ├── grepSearch.ts
+    └── qaTool.ts
+```
+
+---
 
 ## 许可证
 
-MIT
+MIT © magele758
