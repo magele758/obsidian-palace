@@ -206,10 +206,21 @@ export default class ObsidianPalacePlugin extends Plugin {
     const palaceData = store[PALACE_DATA_KEY] as PalaceData | undefined;
 
     if (palaceData) {
-      this.palaceData = palaceData;
+      this.palaceData = {
+        ...palaceData,
+        ui: {
+          graphViewMode: palaceData.ui?.graphViewMode ?? '2d',
+        },
+      };
       this.knowledgeGraph = new KnowledgeGraph(palaceData.graph);
     } else {
-      this.palaceData = { graph: { nodes: [], edges: [], lastUpdated: 0 }, flashcards: [] };
+      this.palaceData = {
+        graph: { nodes: [], edges: [], lastUpdated: 0 },
+        flashcards: [],
+        ui: {
+          graphViewMode: '2d',
+        },
+      };
       this.knowledgeGraph = new KnowledgeGraph();
     }
   }

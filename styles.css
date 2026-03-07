@@ -606,9 +606,47 @@
 }
 
 /* -- Graph -- */
+.palace-graph-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.palace-graph-toolbar-label {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.palace-graph-view-toggle {
+  display: inline-flex;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  overflow: hidden;
+}
+
+.palace-graph-mode-btn {
+  border: none;
+  background: var(--background-secondary);
+  color: var(--text-muted);
+  padding: 6px 10px;
+  font-size: var(--font-ui-smaller);
+  cursor: pointer;
+}
+
+.palace-graph-mode-btn:hover {
+  background: var(--background-modifier-hover);
+}
+
+.palace-graph-mode-btn-active {
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+}
+
 .palace-graph-container {
   width: 100%;
-  height: 300px;
+  height: 340px;
   border: 1px solid var(--background-modifier-border);
   border-radius: var(--radius-m);
   overflow: hidden;
@@ -618,6 +656,13 @@
 
 .palace-graph-svg {
   display: block;
+}
+
+.palace-graph-canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+  cursor: pointer;
 }
 
 .palace-edge {
@@ -660,6 +705,10 @@
   background: var(--background-modifier-hover);
 }
 
+.palace-node-item-active {
+  background: var(--background-modifier-hover);
+}
+
 .palace-node-badge {
   width: 22px;
   height: 22px;
@@ -685,6 +734,32 @@
 }
 
 .palace-node-count {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-faint);
+}
+
+.palace-selected-node {
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  background: var(--background-secondary);
+  padding: 12px;
+  margin-bottom: 12px;
+}
+
+.palace-selected-node h4 {
+  margin: 0 0 6px;
+  font-size: var(--font-ui-medium);
+}
+
+.palace-selected-node p {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+  line-height: 1.5;
+}
+
+.palace-selected-node-meta {
+  margin-top: 8px;
   font-size: var(--font-ui-smaller);
   color: var(--text-faint);
 }
