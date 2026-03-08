@@ -152,7 +152,5 @@ export interface Flashcard {
 export interface PalaceData {
   graph: KnowledgeGraphData;
   flashcards: Flashcard[];
-  ui?: {
-    graphViewMode?: '2d' | '3d';
-  };
+  processedFiles?: string[];  // file paths that have been processed
 }

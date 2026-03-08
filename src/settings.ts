@@ -29,6 +29,7 @@ export interface PalaceSettings {
 
   // Palace settings
   palaceEnabled: boolean;
+  palaceConcurrency: number;
 
   // Vault QA settings (text-based search only)
   vaultQAEnabled: boolean;
@@ -52,6 +53,7 @@ export const DEFAULT_SETTINGS: Partial<PalaceSettings> = {
   e2bDomain: '',
   skillDirectories: ['~/.claude/skills', '~/.codex/skills', '~/.agents/skills'],
   palaceEnabled: true,
+  palaceConcurrency: 10,
   // Vault QA defaults (text-based search)
   vaultQAEnabled: false,
   obsidianWeight: 0.6,
@@ -238,6 +240,22 @@ export class PalaceSettingTab extends PluginSettingTab {
           .onChange(async (value) => {
             this.plugin.settings.palaceEnabled = value;
             await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName('Batch Concurrency')
+      .setDesc('Number of concurrent API requests when processing documents (1-50)')
+      .addText((text) =>
+        text
+          .setPlaceholder('10')
+          .setValue(String(this.plugin.settings.palaceConcurrency || 10))
+          .onChange(async (value) => {
+            const num = parseInt(value, 10);
+            if (!isNaN(num) && num >= 1 && num <= 50) {
+              this.plugin.settings.palaceConcurrency = num;
+              await this.plugin.saveSettings();
+            }
           })
       );
 

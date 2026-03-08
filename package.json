@@ -1,13 +1,21 @@
 {
   "name": "obsidian-palace",
-  "version": "2.2.0",
+  "version": "2.2.1",
   "description": "Obsidian Palace - AI Agent, Memory Palace, Translation, Skills, Sandbox & Vault QA",
   "main": "main.js",
   "scripts": {
     "dev": "node esbuild.config.mjs",
     "build": "node esbuild.config.mjs production"
   },
-  "keywords": ["obsidian", "ai", "agent", "knowledge-graph", "memory-palace", "semantic-search", "vault-qa"],
+  "keywords": [
+    "obsidian",
+    "ai",
+    "agent",
+    "knowledge-graph",
+    "memory-palace",
+    "semantic-search",
+    "vault-qa"
+  ],
   "author": "magele758",
   "license": "MIT",
   "devDependencies": {
@@ -16,5 +24,9 @@
     "esbuild": "^0.24.0",
     "obsidian": "latest",
     "typescript": "^5.6.0"
+  },
+  "dependencies": {
+    "@types/three": "^0.183.1",
+    "three": "^0.183.1"
   }
 }

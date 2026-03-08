@@ -12,31 +12,78 @@ import type {
 
 export class KnowledgeGraph {
   private data: KnowledgeGraphData;
+  // Indexes for O(1) access
+  private nodeMap: Map<string, KnowledgeNode> = new Map();
+  private edgeMap: Map<string, KnowledgeEdge> = new Map();
+  private adjacencyList: Map<string, Set<string>> = new Map();
 
   constructor(data?: KnowledgeGraphData) {
     this.data = data || { nodes: [], edges: [], lastUpdated: Date.now() };
+    this.rebuildIndexes();
+  }
+
+  private rebuildIndexes(): void {
+    this.nodeMap.clear();
+    this.edgeMap.clear();
+    this.adjacencyList.clear();
+
+    for (const node of this.data.nodes) {
+      this.nodeMap.set(node.id, node);
+    }
+
+    for (const edge of this.data.edges) {
+      this.edgeMap.set(edge.id, edge);
+      this.addAdjacency(edge);
+    }
+  }
+
+  private addAdjacency(edge: KnowledgeEdge): void {
+    if (!this.adjacencyList.has(edge.source)) this.adjacencyList.set(edge.source, new Set());
+    if (!this.adjacencyList.has(edge.target)) this.adjacencyList.set(edge.target, new Set());
+    
+    this.adjacencyList.get(edge.source)!.add(edge.id);
+    this.adjacencyList.get(edge.target)!.add(edge.id);
+  }
+
+  private removeAdjacency(edge: KnowledgeEdge): void {
+    this.adjacencyList.get(edge.source)?.delete(edge.id);
+    this.adjacencyList.get(edge.target)?.delete(edge.id);
   }
 
   /* ---- Nodes ---- */
 
   addNode(node: KnowledgeNode): void {
-    const existing = this.data.nodes.findIndex(n => n.id === node.id);
-    if (existing >= 0) {
-      this.data.nodes[existing] = node;
+    if (this.nodeMap.has(node.id)) {
+      const idx = this.data.nodes.findIndex(n => n.id === node.id);
+      if (idx >= 0) this.data.nodes[idx] = node;
     } else {
       this.data.nodes.push(node);
     }
+    this.nodeMap.set(node.id, node);
     this.data.lastUpdated = Date.now();
   }
 
   removeNode(id: string): void {
+    if (!this.nodeMap.has(id)) return;
+    
     this.data.nodes = this.data.nodes.filter(n => n.id !== id);
-    this.data.edges = this.data.edges.filter(e => e.source !== id && e.target !== id);
+    this.nodeMap.delete(id);
+
+    // Remove connected edges
+    const edgesToRemove = this.data.edges.filter(e => e.source === id || e.target === id);
+    for (const e of edgesToRemove) {
+      this.removeEdge(e.id);
+    }
+
     this.data.lastUpdated = Date.now();
   }
 
   getNode(id: string): KnowledgeNode | undefined {
-    return this.data.nodes.find(n => n.id === id);
+    return this.nodeMap.get(id);
+  }
+
+  getConnectionCount(nodeId: string): number {
+    return this.adjacencyList.get(nodeId)?.size || 0;
   }
 
   getNodes(): KnowledgeNode[] {
@@ -55,17 +102,25 @@ export class KnowledgeGraph {
   /* ---- Edges ---- */
 
   addEdge(edge: KnowledgeEdge): void {
-    const existing = this.data.edges.findIndex(e => e.id === edge.id);
-    if (existing >= 0) {
-      this.data.edges[existing] = edge;
+    if (this.edgeMap.has(edge.id)) {
+      const idx = this.data.edges.findIndex(e => e.id === edge.id);
+      if (idx >= 0) this.data.edges[idx] = edge;
+      // We might need to update adjacency if source/target changed, but usually IDs imply same endpoints
     } else {
       this.data.edges.push(edge);
+      this.addAdjacency(edge);
     }
+    this.edgeMap.set(edge.id, edge);
     this.data.lastUpdated = Date.now();
   }
 
   removeEdge(id: string): void {
+    const edge = this.edgeMap.get(id);
+    if (!edge) return;
+
     this.data.edges = this.data.edges.filter(e => e.id !== id);
+    this.edgeMap.delete(id);
+    this.removeAdjacency(edge);
     this.data.lastUpdated = Date.now();
   }
 
@@ -75,14 +130,18 @@ export class KnowledgeGraph {
 
   getConnections(nodeId: string): Array<{ edge: KnowledgeEdge; node: KnowledgeNode }> {
     const results: Array<{ edge: KnowledgeEdge; node: KnowledgeNode }> = [];
+    const edgeIds = this.adjacencyList.get(nodeId);
+    
+    if (!edgeIds) return results;
 
-    for (const edge of this.data.edges) {
-      if (edge.source === nodeId) {
-        const node = this.getNode(edge.target);
-        if (node) results.push({ edge, node });
-      } else if (edge.target === nodeId) {
-        const node = this.getNode(edge.source);
-        if (node) results.push({ edge, node });
+    for (const edgeId of edgeIds) {
+      const edge = this.edgeMap.get(edgeId);
+      if (!edge) continue;
+
+      const connectedNodeId = edge.source === nodeId ? edge.target : edge.source;
+      const node = this.nodeMap.get(connectedNodeId);
+      if (node) {
+        results.push({ edge, node });
       }
     }
 
@@ -102,14 +161,8 @@ export class KnowledgeGraph {
    * Get the N most connected nodes
    */
   getMostConnected(limit = 10): Array<{ node: KnowledgeNode; connections: number }> {
-    const counts = new Map<string, number>();
-    for (const edge of this.data.edges) {
-      counts.set(edge.source, (counts.get(edge.source) || 0) + 1);
-      counts.set(edge.target, (counts.get(edge.target) || 0) + 1);
-    }
-
     return this.data.nodes
-      .map(node => ({ node, connections: counts.get(node.id) || 0 }))
+      .map(node => ({ node, connections: this.adjacencyList.get(node.id)?.size || 0 }))
       .sort((a, b) => b.connections - a.connections)
       .slice(0, limit);
   }
@@ -126,6 +179,45 @@ export class KnowledgeGraph {
     for (const edge of edges) {
       this.addEdge(edge);
     }
+  }
+
+  /* ---- Subgraph ---- */
+  
+  /**
+   * Get a subgraph centered around a specific node with a given degree of connections
+   */
+  getSubgraph(centerNodeId: string, maxDegree: number = 1): KnowledgeGraph {
+    const subNodes = new Map<string, KnowledgeNode>();
+    const subEdges = new Map<string, KnowledgeEdge>();
+    
+    const centerNode = this.nodeMap.get(centerNodeId);
+    if (!centerNode) return new KnowledgeGraph();
+    
+    subNodes.set(centerNodeId, centerNode);
+    
+    let currentLevel = new Set<string>([centerNodeId]);
+    
+    for (let i = 0; i < maxDegree; i++) {
+      const nextLevel = new Set<string>();
+      
+      for (const nodeId of currentLevel) {
+        const connections = this.getConnections(nodeId);
+        for (const conn of connections) {
+          subNodes.set(conn.node.id, conn.node);
+          subEdges.set(conn.edge.id, conn.edge);
+          if (!subNodes.has(conn.node.id)) {
+            nextLevel.add(conn.node.id);
+          }
+        }
+      }
+      currentLevel = nextLevel;
+    }
+    
+    return new KnowledgeGraph({
+      nodes: Array.from(subNodes.values()),
+      edges: Array.from(subEdges.values()),
+      lastUpdated: Date.now()
+    });
   }
 
   /* ---- Serialization ---- */

@@ -1,7 +1,7 @@
 {
   "id": "obsidian-ai-translate",
   "name": "Obsidian Palace",
-  "version": "2.2.0",
+  "version": "2.2.1",
   "minAppVersion": "0.16.0",
   "description": "AI-powered knowledge management: Agent with tool calling, Memory Palace with knowledge graph & flashcards, document translation, cloud sandbox, skill system, and vault text search.",
   "author": "magele758",

@@ -46,13 +46,14 @@ Output ONLY valid JSON in this exact format:
 Rules:
 - Extract 5-15 nodes depending on document length
 - Create edges only between extracted nodes
-- Generate 3-8 flashcards covering key knowledge points
+- **Flashcards MUST strictly follow the "Minimum Information Principle"**: Questions must be specific. Answers MUST be extremely concise, ideally 1-2 short sentences or a single concept/term. DO NOT output long paragraphs as answers.
 - Node IDs must be unique, kebab-case
 - Edge weights: 1.0 = very strong relation, 0.5 = moderate, 0.1 = weak
 - Focus on the most important and memorable knowledge`;
 
 function generateId(): string {
-  return Math.random().toString(36).substring(2, 10);
+  // A simple but effective random ID generator replacing Math.random
+  return Date.now().toString(36) + Math.random().toString(36).substring(2, 8);
 }
 
 export class GraphExtractor {

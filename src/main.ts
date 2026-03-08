@@ -9,7 +9,7 @@
  * - Cloud sandbox (E2B) for code execution
  */
 
-import { Editor, MarkdownView, Notice, Plugin, TFile } from 'obsidian';
+import { App, Editor, MarkdownView, Modal, Notice, Plugin, TFile } from 'obsidian';
 import { PalaceSettings, PalaceSettingTab, DEFAULT_SETTINGS } from './settings';
 import { Translator, TranslatorConfig } from './translator';
 import { ChatView, CHAT_VIEW_TYPE } from './chatView';
@@ -41,14 +41,35 @@ export default class ObsidianPalacePlugin extends Plugin {
   // Vault QA components (text-based search only)
   hybridSearch: HybridSearch | null = null;
 
+  // Batch processing state
+  isProcessing = false;
+  private abortController: AbortController | null = null;
+
   // Callback for settings UI
   getVaultQATools?: () => AgentTool[];
   toggleVaultQA?: (enabled: boolean) => Promise<void>;
 
   async onload() {
-    await this.loadSettings();
-    await this.loadPalaceData();
-    await this.loadChatSessions();
+    // Load all data at once to reduce disk I/O
+    const store = await this.readStore();
+    
+    // Init settings
+    const saved = (store.settings || {}) as Record<string, unknown>;
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, saved) as PalaceSettings;
+
+    // Init palace data
+    const palaceData = store[PALACE_DATA_KEY] as PalaceData | undefined;
+    if (palaceData) {
+      this.palaceData = palaceData;
+      this.knowledgeGraph = new KnowledgeGraph(palaceData.graph);
+    } else {
+      this.palaceData = { graph: { nodes: [], edges: [], lastUpdated: 0 }, flashcards: [] };
+      this.knowledgeGraph = new KnowledgeGraph();
+    }
+
+    // Init chat sessions
+    this.chatSessions = (store[CHAT_SESSIONS_KEY] as ChatSession[] | undefined) || [];
+    this.chatSessions.sort((a, b) => b.updatedAt - a.updatedAt);
 
     // Init skill registry
     this.skillRegistry = new SkillRegistry();
@@ -109,6 +130,24 @@ export default class ObsidianPalacePlugin extends Plugin {
       id: 'extract-knowledge',
       name: 'Extract Knowledge from Current Document',
       callback: () => this.extractKnowledge(),
+    });
+
+    this.addCommand({
+      id: 'extract-knowledge-batch',
+      name: 'Extract Knowledge from All Documents',
+      callback: () => this.extractKnowledgeBatch(),
+    });
+
+    this.addCommand({
+      id: 'extract-knowledge-incremental',
+      name: 'Extract Knowledge from New Documents',
+      callback: () => this.extractKnowledgeIncremental(),
+    });
+
+    this.addCommand({
+      id: 'stop-knowledge-extraction',
+      name: 'Stop Knowledge Extraction',
+      callback: () => this.stopKnowledgeExtraction(),
     });
 
     this.addCommand({
@@ -190,6 +229,7 @@ export default class ObsidianPalacePlugin extends Plugin {
   }
 
   async loadSettings() {
+    // Backward compatibility for calls
     const store = await this.readStore();
     const saved = (store.settings || {}) as Record<string, unknown>;
     this.settings = Object.assign({}, DEFAULT_SETTINGS, saved) as PalaceSettings;
@@ -202,6 +242,7 @@ export default class ObsidianPalacePlugin extends Plugin {
   }
 
   async loadPalaceData() {
+    // Backward compatibility for calls
     const store = await this.readStore();
     const palaceData = store[PALACE_DATA_KEY] as PalaceData | undefined;
 
@@ -234,6 +275,7 @@ export default class ObsidianPalacePlugin extends Plugin {
   }
 
   async loadChatSessions() {
+    // Backward compatibility for calls
     const store = await this.readStore();
     this.chatSessions = (store[CHAT_SESSIONS_KEY] as ChatSession[] | undefined) || [];
     this.chatSessions.sort((a, b) => b.updatedAt - a.updatedAt);
@@ -360,6 +402,13 @@ export default class ObsidianPalacePlugin extends Plugin {
       // Add flashcards
       if (this.palaceData) {
         this.palaceData.flashcards.push(...result.flashcards);
+        // Track processed file
+        if (!this.palaceData.processedFiles) {
+          this.palaceData.processedFiles = [];
+        }
+        if (!this.palaceData.processedFiles.includes(file.path)) {
+          this.palaceData.processedFiles.push(file.path);
+        }
       }
 
       await this.savePalaceData();
@@ -379,6 +428,190 @@ export default class ObsidianPalacePlugin extends Plugin {
       const msg = error instanceof Error ? error.message : String(error);
       new Notice(`Knowledge extraction failed: ${msg}`, 8000);
     }
+  }
+
+  /**
+   * Extract knowledge from all markdown files in the vault
+   */
+  async extractKnowledgeBatch() {
+    if (!this.validateLLMSettings()) return;
+
+    const files = this.app.vault.getMarkdownFiles();
+    if (files.length === 0) {
+      new Notice('No markdown files found in vault');
+      return;
+    }
+
+    // Confirm with user
+    const confirmed = await this.showConfirmDialog(
+      'Extract Knowledge from All Documents',
+      `This will process ${files.length} markdown files. This may take a while and consume API credits. Continue?`
+    );
+    if (!confirmed) return;
+
+    await this.processFiles(files, 'all');
+  }
+
+  /**
+   * Extract knowledge from files not yet processed (incremental update)
+   */
+  async extractKnowledgeIncremental() {
+    if (!this.validateLLMSettings()) return;
+
+    const processedFiles = new Set(this.palaceData?.processedFiles || []);
+    const allFiles = this.app.vault.getMarkdownFiles();
+    const newFiles = allFiles.filter(f => !processedFiles.has(f.path));
+
+    if (newFiles.length === 0) {
+      new Notice('No new documents to process');
+      return;
+    }
+
+    const confirmed = await this.showConfirmDialog(
+      'Extract Knowledge from New Documents',
+      `Found ${newFiles.length} new/modified files to process. Continue?`
+    );
+    if (!confirmed) return;
+
+    await this.processFiles(newFiles, 'incremental');
+  }
+
+  /**
+   * Process a list of files for knowledge extraction with concurrency
+   */
+  private async processFiles(files: TFile[], mode: 'all' | 'incremental') {
+    const concurrency = this.settings.palaceConcurrency || 10;
+    this.isProcessing = true;
+    this.abortController = new AbortController();
+    const signal = this.abortController.signal;
+
+    const notice = new Notice('', 0);
+
+    let completedCount = 0;
+    let successCount = 0;
+    let failCount = 0;
+    let totalNodes = 0;
+    let totalEdges = 0;
+    let totalCards = 0;
+    const failedFiles: string[] = [];
+
+    // Initialize processedFiles if needed
+    if (!this.palaceData) {
+      this.palaceData = { graph: { nodes: [], edges: [], lastUpdated: 0 }, flashcards: [], processedFiles: [] };
+    }
+    if (!this.palaceData.processedFiles) {
+      this.palaceData.processedFiles = [];
+    }
+
+    // Process a single file
+    const processFile = async (file: TFile) => {
+      if (signal.aborted) return null;
+
+      try {
+        const content = await this.app.vault.cachedRead(file);
+        if (!content.trim() || signal.aborted) {
+          completedCount++;
+          return null;
+        }
+
+        // Create a new extractor for each concurrent request
+        const extractor = new GraphExtractor(this.createLLMClient());
+        const result = await extractor.extract(content, file.path);
+
+        if (signal.aborted) return null;
+
+        completedCount++;
+        successCount++;
+        notice.setMessage(`Processing: ${completedCount}/${files.length} (success: ${successCount})`);
+
+        return result;
+      } catch (error) {
+        if (signal.aborted) return null;
+        console.error(`Failed to extract from ${file.path}:`, error);
+        completedCount++;
+        failCount++;
+        failedFiles.push(file.path);
+        return null;
+      }
+    };
+
+    // Process files in batches with concurrency limit
+    const results: Array<{ file: TFile; result: Awaited<ReturnType<typeof processFile>> }>[] = [];
+
+    for (let i = 0; i < files.length; i += concurrency) {
+      if (signal.aborted) break;
+
+      const batch = files.slice(i, i + concurrency);
+      const batchResults = await Promise.all(
+        batch.map(async (file) => ({
+          file,
+          result: await processFile(file),
+        }))
+      );
+      results.push(batchResults);
+
+      // Merge results from this batch
+      for (const { file, result } of batchResults) {
+        if (result) {
+          this.knowledgeGraph.merge(result.nodes, result.edges);
+          this.palaceData!.flashcards.push(...result.flashcards);
+          if (!this.palaceData!.processedFiles!.includes(file.path)) {
+            this.palaceData!.processedFiles!.push(file.path);
+          }
+          totalNodes += result.nodes.length;
+          totalEdges += result.edges.length;
+          totalCards += result.flashcards.length;
+        }
+      }
+
+      // Save after each batch
+      await this.savePalaceData();
+    }
+
+    this.isProcessing = false;
+    this.abortController = null;
+    notice.hide();
+
+    const wasAborted = signal.aborted;
+    
+    let summaryMsg = wasAborted
+      ? `Extraction stopped!\nProcessed: ${successCount}/${files.length} files\nExtracted: ${totalNodes} concepts, ${totalEdges} connections, ${totalCards} flashcards`
+      : `Batch extraction complete!\nProcessed: ${successCount}/${files.length} files\nExtracted: ${totalNodes} concepts, ${totalEdges} connections, ${totalCards} flashcards`;
+    
+    if (failCount > 0) {
+      summaryMsg += `\nFailed: ${failCount} files. Check console for details.`;
+      console.warn('Obsidian Palace: Failed to extract from these files:', failedFiles);
+    }
+    
+    new Notice(summaryMsg, 10000);
+
+    // Refresh Palace view if open
+    const palaceLeaves = this.app.workspace.getLeavesOfType(PALACE_VIEW_TYPE);
+    for (const leaf of palaceLeaves) {
+      (leaf.view as PalaceView).onOpen();
+    }
+  }
+
+  /**
+   * Stop ongoing knowledge extraction
+   */
+  stopKnowledgeExtraction() {
+    if (this.isProcessing && this.abortController) {
+      this.abortController.abort();
+      new Notice('Stopping knowledge extraction...');
+    } else {
+      new Notice('No extraction in progress');
+    }
+  }
+
+  /**
+   * Show a confirmation dialog
+   */
+  private showConfirmDialog(title: string, message: string): Promise<boolean> {
+    return new Promise((resolve) => {
+      const modal = new ConfirmModal(this.app, title, message, resolve);
+      modal.open();
+    });
   }
 
   /* ---- Views ---- */
@@ -561,5 +794,51 @@ export default class ObsidianPalacePlugin extends Plugin {
   private cleanupVaultQA(): void {
     this.hybridSearch = null;
     this.getVaultQATools = undefined;
+  }
+}
+
+/**
+ * Simple confirmation modal for batch operations
+ */
+class ConfirmModal extends Modal {
+  private title: string;
+  private message: string;
+  private resolve: (value: boolean) => void;
+
+  constructor(app: App, title: string, message: string, resolve: (value: boolean) => void) {
+    super(app);
+    this.title = title;
+    this.message = message;
+    this.resolve = resolve;
+  }
+
+  onOpen() {
+    const { contentEl } = this;
+
+    contentEl.createEl('h2', { text: this.title });
+    contentEl.createEl('p', { text: this.message });
+
+    const buttonContainer = contentEl.createDiv({ cls: 'modal-button-container' });
+    buttonContainer.style.display = 'flex';
+    buttonContainer.style.justifyContent = 'flex-end';
+    buttonContainer.style.gap = '10px';
+    buttonContainer.style.marginTop = '20px';
+
+    const cancelBtn = buttonContainer.createEl('button', { text: 'Cancel' });
+    cancelBtn.addEventListener('click', () => {
+      this.close();
+      this.resolve(false);
+    });
+
+    const confirmBtn = buttonContainer.createEl('button', { text: 'Continue', cls: 'mod-cta' });
+    confirmBtn.addEventListener('click', () => {
+      this.close();
+      this.resolve(true);
+    });
+  }
+
+  onClose() {
+    const { contentEl } = this;
+    contentEl.empty();
   }
 }

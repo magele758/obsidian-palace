@@ -2,34 +2,38 @@
  * Palace View - Memory Palace knowledge graph visualization and flashcard review UI.
  */
 
-import { ItemView, WorkspaceLeaf, setIcon } from 'obsidian';
+import { ItemView, WorkspaceLeaf, setIcon, Notice } from 'obsidian';
 import type ObsidianPalacePlugin from '../main';
 import { KnowledgeGraph } from './knowledgeGraph';
 import { getDueCards, getReviewStats, processReview } from './reviewScheduler';
 import type { QualityRating } from './reviewScheduler';
-import type { Flashcard } from '../shared/types';
+import type { KnowledgeNode, Flashcard } from '../shared/types';
+import { Graph2DRenderer } from './graph2d';
+import { Graph3DRenderer } from './graph3d';
+
+// Node type colors - defined locally to avoid minification issues
+const NODE_COLORS: Record<string, string> = {
+  concept: '#7c3aed',
+  entity: '#10b981',
+  topic: '#f59e0b',
+  fact: '#8b5cf6',
+};
 
 export const PALACE_VIEW_TYPE = 'palace-view';
 
 type ViewMode = 'graph' | 'review' | 'stats';
-type GraphViewMode = '2d' | '3d';
-
-type Vec3 = {
-  x: number;
-  y: number;
-  z: number;
-};
+type GraphType = '2d' | '3d';
 
 export class PalaceView extends ItemView {
   plugin: ObsidianPalacePlugin;
   private mode: ViewMode = 'graph';
-  private graphViewMode: GraphViewMode = '2d';
+  private graphType: GraphType = '2d';
   private container: HTMLElement;
   private currentReviewCard: Flashcard | null = null;
   private showAnswer = false;
-  private selectedNodeId: string | null = null;
-  private graphAnimationFrame: number | null = null;
-  private graphCleanupFns: Array<() => void> = [];
+  private graphRenderer: Graph2DRenderer | Graph3DRenderer | null = null;
+  private selectedNode: KnowledgeNode | null = null;
+  private isLocalView = false;
 
   constructor(leaf: WorkspaceLeaf, plugin: ObsidianPalacePlugin) {
     super(leaf);
@@ -44,18 +48,25 @@ export class PalaceView extends ItemView {
     this.container = this.containerEl.children[1] as HTMLElement;
     this.container.empty();
     this.container.addClass('palace-container');
-    this.graphViewMode = this.plugin.palaceData?.ui?.graphViewMode ?? '2d';
     this.render();
   }
 
   async onClose() {
-    this.cleanupGraphAnimation();
+    // Clean up 2D renderer
+    if (this.graphRenderer) {
+      this.graphRenderer.dispose();
+      this.graphRenderer = null;
+    }
   }
 
   /* ---- Render ---- */
 
   private render() {
-    this.cleanupGraphAnimation();
+    // Dispose of graph renderer before clearing container
+    if (this.graphRenderer) {
+      this.graphRenderer.dispose();
+      this.graphRenderer = null;
+    }
     this.container.empty();
 
     // Header with mode tabs
@@ -72,6 +83,12 @@ export class PalaceView extends ItemView {
 
     // Content area
     const content = this.container.createDiv({ cls: 'palace-content' });
+
+    // Graph mode needs full-height canvas without padding/scroll interference
+    if (this.mode === 'graph') {
+      content.style.padding = '0';
+      content.style.overflow = 'hidden';
+    }
 
     switch (this.mode) {
       case 'graph':
@@ -105,484 +122,449 @@ export class PalaceView extends ItemView {
     const graph = this.plugin.knowledgeGraph;
     const stats = graph.getStats();
 
-    if (stats.nodes === 0) {
-      const empty = container.createDiv({ cls: 'palace-empty' });
-      empty.createEl('div', { cls: 'palace-empty-icon', text: '🏛️' });
-      empty.createEl('div', {
-        cls: 'palace-empty-title',
-        text: 'Your Memory Palace is empty',
-      });
-      empty.createEl('div', {
-        cls: 'palace-empty-desc',
-        text: 'Open a document and use the command "Extract Knowledge" to start building your knowledge graph.',
-      });
+    // Show processing indicator if extraction is in progress
+    if (this.plugin.isProcessing) {
+      this.renderProcessingState(container);
       return;
     }
 
-    const toolbar = container.createDiv({ cls: 'palace-graph-toolbar' });
-    toolbar.createSpan({ cls: 'palace-graph-toolbar-label', text: 'Graph View' });
+    if (stats.nodes === 0) {
+      this.renderEmptyState(container);
+      return;
+    }
 
-    const toggle = toolbar.createDiv({ cls: 'palace-graph-view-toggle' });
-    this.createGraphModeButton(toggle, '2d', '2D');
-    this.createGraphModeButton(toggle, '3d', '3D');
+    // 1. Create persistent layout skeleton
+    container.empty();
+    container.style.position = 'relative';
+    container.style.height = '100%';
+    container.style.width = '100%';
+    
+    const layout = container.createDiv({ cls: 'palace-graph-layout' });
 
-    const graphContainer = container.createDiv({ cls: `palace-graph-container palace-graph-${this.graphViewMode}` });
-    if (this.graphViewMode === '2d') {
-      const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-      svg.setAttribute('width', '100%');
-      svg.setAttribute('height', '100%');
-      svg.classList.add('palace-graph-svg');
-      graphContainer.appendChild(svg);
-      this.renderForceGraph(svg, graph);
+    // 2. Main Graph Panel
+    const mainPanel = layout.createDiv({ cls: 'palace-main-panel' });
+    const controlsContainer = mainPanel.createDiv({ cls: 'palace-graph-controls' });
+    
+    // Controls: Regenerate, Local/Global, 2D/3D
+    this.createControlButtons(controlsContainer, layout);
+
+    // 3. Right Sidebar (Nodes + Details)
+    const rightPanel = layout.createDiv({ cls: 'palace-right-panel' });
+    const nodeListSection = rightPanel.createDiv({ cls: 'palace-node-list-section' });
+    const detailsSection = rightPanel.createDiv({ cls: 'palace-details-section-container' });
+
+    // 4. Initialize Renderer
+    if (this.graphRenderer) this.graphRenderer.dispose();
+    
+    if (this.graphType === '3d') {
+      this.graphRenderer = new Graph3DRenderer(mainPanel);
     } else {
-      const canvas = document.createElement('canvas');
-      canvas.classList.add('palace-graph-canvas');
-      graphContainer.appendChild(canvas);
-      this.render3DGraph(canvas, graph);
+      this.graphRenderer = new Graph2DRenderer(mainPanel);
     }
 
-    const selectedNode = this.selectedNodeId ? graph.getNode(this.selectedNodeId) : null;
-    if (selectedNode) {
-      const details = container.createDiv({ cls: 'palace-selected-node' });
-      details.createEl('h4', { text: selectedNode.label });
-      details.createEl('p', { text: selectedNode.description || 'No description.' });
-      const linkCount = graph.getConnections(selectedNode.id).length;
-      details.createEl('div', { cls: 'palace-selected-node-meta', text: `${linkCount} connection(s)` });
-    }
-
-    // Node list below
-    const nodeList = container.createDiv({ cls: 'palace-node-list' });
-    nodeList.createEl('h3', { text: `Concepts (${stats.nodes})` });
-
-    const mostConnected = graph.getMostConnected(20);
-    for (const { node, connections } of mostConnected) {
-      const item = nodeList.createDiv({
-        cls: `palace-node-item ${this.selectedNodeId === node.id ? 'palace-node-item-active' : ''}`,
-      });
-      const badge = item.createSpan({ cls: `palace-node-badge palace-type-${node.type}` });
-      badge.setText(node.type[0].toUpperCase());
-      item.createSpan({ cls: 'palace-node-label', text: node.label });
-      item.createSpan({ cls: 'palace-node-count', text: `${connections} links` });
-      item.addEventListener('click', () => {
-        this.selectedNodeId = this.selectedNodeId === node.id ? null : node.id;
-        this.render();
-      });
-    }
-  }
-
-  private createGraphModeButton(parent: HTMLElement, mode: GraphViewMode, label: string) {
-    const btn = parent.createEl('button', {
-      cls: `palace-graph-mode-btn ${this.graphViewMode === mode ? 'palace-graph-mode-btn-active' : ''}`,
-      text: label,
+    // Set up selection callback - ensuring it updates the static sections
+    this.graphRenderer.onSelect((nodeId) => {
+      this.handleNodeSelection(nodeId, layout);
     });
 
-    btn.addEventListener('click', () => {
-      void this.setGraphViewMode(mode);
+    // 5. Initial Data Loading
+    this.refreshGraphDisplay();
+    this.renderNodeListPanel(nodeListSection, graph, stats);
+    this.renderDetailsPanel(detailsSection);
+
+    // Legend
+    const legend = mainPanel.createDiv({ cls: 'palace-legend' });
+    this.renderLegend(legend);
+  }
+
+  private createControlButtons(parent: HTMLElement, layout: HTMLElement) {
+    const regen = parent.createEl('button', { cls: 'palace-action-btn-small', text: '🔄' });
+    regen.title = 'Regenerate Layout';
+    regen.addEventListener('click', () => this.regenerateGraph());
+
+    const viewMode = parent.createEl('button', { 
+      cls: `palace-action-btn-small ${this.isLocalView ? 'active' : ''}`, 
+      text: this.isLocalView ? '🔍 Local' : '🌐 Global' 
+    });
+    viewMode.addEventListener('click', () => {
+      this.isLocalView = !this.isLocalView;
+      viewMode.setText(this.isLocalView ? '🔍 Local' : '🌐 Global');
+      viewMode.classList.toggle('active', this.isLocalView);
+      this.refreshGraphDisplay();
+    });
+
+    const typeToggle = parent.createEl('button', { 
+      cls: 'palace-action-btn-small', 
+      text: this.graphType === '2d' ? '🧊 3D' : '🖼️ 2D' 
+    });
+    typeToggle.addEventListener('click', () => {
+      this.graphType = this.graphType === '2d' ? '3d' : '2d';
+      this.render(); // Re-render the whole structure
     });
   }
 
-  private async setGraphViewMode(mode: GraphViewMode) {
-    if (this.graphViewMode === mode) return;
-
-    this.graphViewMode = mode;
-    if (this.plugin.palaceData) {
-      this.plugin.palaceData.ui = {
-        ...(this.plugin.palaceData.ui || {}),
-        graphViewMode: mode,
-      };
-      await this.plugin.savePalaceData();
-    }
-    this.render();
-  }
-
-  private cleanupGraphAnimation() {
-    if (this.graphAnimationFrame !== null) {
-      cancelAnimationFrame(this.graphAnimationFrame);
-      this.graphAnimationFrame = null;
-    }
-
-    for (const cleanup of this.graphCleanupFns) {
-      cleanup();
-    }
-    this.graphCleanupFns = [];
-  }
-
-  private getConnectedNodeIds(graph: KnowledgeGraph, nodeId: string): Set<string> {
-    const connected = new Set<string>();
-    for (const edge of graph.getEdges()) {
-      if (edge.source === nodeId) connected.add(edge.target);
-      if (edge.target === nodeId) connected.add(edge.source);
-    }
-    return connected;
-  }
-
-  /**
-   * Simple force-directed graph layout using SVG
-   */
-  private renderForceGraph(svg: SVGSVGElement, graph: KnowledgeGraph) {
-    const nodes = graph.getNodes();
-    const edges = graph.getEdges();
-
-    if (nodes.length === 0) return;
-
-    const width = 800;
-    const height = 420;
-    svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
-
-    // Initialize positions in a circle
-    const positions = new Map<string, { x: number; y: number }>();
-    nodes.forEach((node, i) => {
-      const angle = (2 * Math.PI * i) / nodes.length;
-      const r = Math.min(width, height) * 0.35;
-      positions.set(node.id, {
-        x: width / 2 + r * Math.cos(angle),
-        y: height / 2 + r * Math.sin(angle),
-      });
-    });
-
-    // Simple force simulation (a few iterations)
-    for (let iter = 0; iter < 60; iter++) {
-      // Repulsion between nodes
-      for (let i = 0; i < nodes.length; i++) {
-        for (let j = i + 1; j < nodes.length; j++) {
-          const a = positions.get(nodes[i].id);
-          const b = positions.get(nodes[j].id);
-          if (!a || !b) continue;
-
-          const dx = b.x - a.x;
-          const dy = b.y - a.y;
-          const dist = Math.max(Math.sqrt(dx * dx + dy * dy), 1);
-          const force = 500 / (dist * dist);
-          a.x -= (dx / dist) * force;
-          a.y -= (dy / dist) * force;
-          b.x += (dx / dist) * force;
-          b.y += (dy / dist) * force;
-        }
-      }
-
-      // Attraction along edges
-      for (const edge of edges) {
-        const a = positions.get(edge.source);
-        const b = positions.get(edge.target);
-        if (!a || !b) continue;
-
-        const dx = b.x - a.x;
-        const dy = b.y - a.y;
-        const dist = Math.max(Math.sqrt(dx * dx + dy * dy), 1);
-        const force = (dist - 100) * 0.012;
-        a.x += (dx / dist) * force;
-        a.y += (dy / dist) * force;
-        b.x -= (dx / dist) * force;
-        b.y -= (dy / dist) * force;
-      }
-
-      // Center gravity
-      for (const pos of positions.values()) {
-        pos.x += (width / 2 - pos.x) * 0.01;
-        pos.y += (height / 2 - pos.y) * 0.01;
-        pos.x = Math.max(30, Math.min(width - 30, pos.x));
-        pos.y = Math.max(30, Math.min(height - 30, pos.y));
-      }
-    }
-
-    const selected = this.selectedNodeId;
-    const connectedToSelected = selected ? this.getConnectedNodeIds(graph, selected) : new Set<string>();
-
-    // Draw edges
-    for (const edge of edges) {
-      const a = positions.get(edge.source);
-      const b = positions.get(edge.target);
-      if (!a || !b) continue;
-
-      const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
-      line.setAttribute('x1', String(a.x));
-      line.setAttribute('y1', String(a.y));
-      line.setAttribute('x2', String(b.x));
-      line.setAttribute('y2', String(b.y));
-      line.classList.add('palace-edge');
-
-      const weight = Math.max(0, Math.min(1, edge.weight || 0.3));
-      const related = !selected || edge.source === selected || edge.target === selected;
-      line.style.opacity = String((related ? 0.3 : 0.08) + weight * (related ? 0.6 : 0.2));
-      svg.appendChild(line);
-    }
-
-    // Draw nodes
-    const typeColors: Record<string, string> = {
-      concept: 'var(--interactive-accent)',
-      entity: 'var(--color-green)',
-      topic: 'var(--color-orange)',
-      fact: 'var(--color-purple)',
-    };
-
-    for (const node of nodes) {
-      const pos = positions.get(node.id);
-      if (!pos) continue;
-
-      const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
-      g.classList.add('palace-graph-node');
-
-      const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-      circle.setAttribute('cx', String(pos.x));
-      circle.setAttribute('cy', String(pos.y));
-
-      const isSelected = node.id === selected;
-      const isConnected = selected ? connectedToSelected.has(node.id) : false;
-      const radius = isSelected ? 12 : isConnected ? 10 : 8;
-      circle.setAttribute('r', String(radius));
-      circle.setAttribute('fill', typeColors[node.type] || typeColors.concept);
-      circle.style.opacity = !selected || isSelected || isConnected ? '1' : '0.35';
-      g.appendChild(circle);
-
-      const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-      text.setAttribute('x', String(pos.x));
-      text.setAttribute('y', String(pos.y - 14));
-      text.setAttribute('text-anchor', 'middle');
-      text.classList.add('palace-graph-label');
-      text.style.opacity = !selected || isSelected || isConnected ? '1' : '0.35';
-      text.textContent = node.label.length > 16 ? `${node.label.slice(0, 16)}...` : node.label;
-      g.appendChild(text);
-
-      g.addEventListener('click', () => {
-        this.selectedNodeId = this.selectedNodeId === node.id ? null : node.id;
-        this.render();
-      });
-
-      svg.appendChild(g);
-    }
-  }
-
-  private render3DGraph(canvas: HTMLCanvasElement, graph: KnowledgeGraph) {
-    const nodes = graph.getNodes();
-    const edges = graph.getEdges();
-    if (nodes.length === 0) return;
-
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    const pointState = new Map<string, Vec3>();
-    const velocity = new Map<string, Vec3>();
-    const projected = new Map<string, { x: number; y: number; z: number; r: number }>();
-
-    const radius = 140;
-    for (let i = 0; i < nodes.length; i++) {
-      const phi = Math.acos(1 - (2 * (i + 0.5)) / nodes.length);
-      const theta = Math.PI * (1 + Math.sqrt(5)) * i;
-      pointState.set(nodes[i].id, {
-        x: radius * Math.cos(theta) * Math.sin(phi),
-        y: radius * Math.sin(theta) * Math.sin(phi),
-        z: radius * Math.cos(phi),
-      });
-      velocity.set(nodes[i].id, { x: 0, y: 0, z: 0 });
-    }
-
-    let angleY = 0;
-    let angleX = 0.25;
-    let width = 0;
-    let height = 0;
-
-    const dpr = window.devicePixelRatio || 1;
-    const resize = () => {
-      const rect = canvas.getBoundingClientRect();
-      width = Math.max(300, Math.floor(rect.width || 800));
-      height = Math.max(220, Math.floor(rect.height || 420));
-      canvas.width = Math.floor(width * dpr);
-      canvas.height = Math.floor(height * dpr);
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    };
-
-    const animate = () => {
-      ctx.clearRect(0, 0, width, height);
-
-      for (const edge of edges) {
-        const a = pointState.get(edge.source);
-        const b = pointState.get(edge.target);
-        const va = velocity.get(edge.source);
-        const vb = velocity.get(edge.target);
-        if (!a || !b || !va || !vb) continue;
-
-        const dx = b.x - a.x;
-        const dy = b.y - a.y;
-        const dz = b.z - a.z;
-        const dist = Math.max(Math.sqrt(dx * dx + dy * dy + dz * dz), 1);
-        const force = (dist - 90) * 0.002;
-        va.x += (dx / dist) * force;
-        va.y += (dy / dist) * force;
-        va.z += (dz / dist) * force;
-        vb.x -= (dx / dist) * force;
-        vb.y -= (dy / dist) * force;
-        vb.z -= (dz / dist) * force;
-      }
-
-      const k = 500;
-      for (let i = 0; i < nodes.length; i++) {
-        for (let j = i + 1; j < nodes.length; j++) {
-          const a = pointState.get(nodes[i].id);
-          const b = pointState.get(nodes[j].id);
-          const va = velocity.get(nodes[i].id);
-          const vb = velocity.get(nodes[j].id);
-          if (!a || !b || !va || !vb) continue;
-
-          const dx = b.x - a.x;
-          const dy = b.y - a.y;
-          const dz = b.z - a.z;
-          const dist = Math.max(Math.sqrt(dx * dx + dy * dy + dz * dz), 1);
-          const force = k / (dist * dist * dist);
-          va.x -= dx * force;
-          va.y -= dy * force;
-          va.z -= dz * force;
-          vb.x += dx * force;
-          vb.y += dy * force;
-          vb.z += dz * force;
-        }
-      }
-
-      for (const node of nodes) {
-        const p = pointState.get(node.id);
-        const v = velocity.get(node.id);
-        if (!p || !v) continue;
-
-        v.x *= 0.92;
-        v.y *= 0.92;
-        v.z *= 0.92;
-
-        p.x += v.x;
-        p.y += v.y;
-        p.z += v.z;
-      }
-
-      angleY += 0.003;
-
-      const sinY = Math.sin(angleY);
-      const cosY = Math.cos(angleY);
-      const sinX = Math.sin(angleX);
-      const cosX = Math.cos(angleX);
-
-      const selected = this.selectedNodeId;
-      const connectedToSelected = selected ? this.getConnectedNodeIds(graph, selected) : new Set<string>();
-
-      for (const node of nodes) {
-        const p = pointState.get(node.id);
-        if (!p) continue;
-
-        const xzX = p.x * cosY - p.z * sinY;
-        const xzZ = p.x * sinY + p.z * cosY;
-
-        const yzY = p.y * cosX - xzZ * sinX;
-        const yzZ = p.y * sinX + xzZ * cosX;
-
-        const depth = 350;
-        const scale = depth / (depth + yzZ + 200);
-        const sx = width / 2 + xzX * scale;
-        const sy = height / 2 + yzY * scale;
-        const isSelected = node.id === selected;
-        const isConnected = selected ? connectedToSelected.has(node.id) : false;
-        const baseRadius = isSelected ? 8 : isConnected ? 6 : 5;
-
-        projected.set(node.id, { x: sx, y: sy, z: yzZ, r: baseRadius * scale + 2 });
-      }
-
-      for (const edge of edges) {
-        const a = projected.get(edge.source);
-        const b = projected.get(edge.target);
-        if (!a || !b) continue;
-
-        const selected = this.selectedNodeId;
-        const isRelated = !selected || edge.source === selected || edge.target === selected;
-        const alpha = isRelated ? 0.35 : 0.08;
-
-        ctx.beginPath();
-        ctx.moveTo(a.x, a.y);
-        ctx.lineTo(b.x, b.y);
-        ctx.strokeStyle = `rgba(130, 140, 160, ${alpha})`;
-        ctx.lineWidth = 1.2;
-        ctx.stroke();
-      }
-
-      const sorted = [...nodes].sort((a, b) => {
-        const pa = projected.get(a.id);
-        const pb = projected.get(b.id);
-        if (!pa || !pb) return 0;
-        return pa.z - pb.z;
-      });
-
-      const connectedToCurrentSelection = this.selectedNodeId
-        ? this.getConnectedNodeIds(graph, this.selectedNodeId)
-        : new Set<string>();
-
-      for (const node of sorted) {
-        const p = projected.get(node.id);
-        if (!p) continue;
-
-        const selected = this.selectedNodeId;
-        const isSelected = selected === node.id;
-        const isConnected = selected ? connectedToCurrentSelection.has(node.id) : false;
-        const alpha = !selected || isSelected || isConnected ? 0.95 : 0.3;
-
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
-        ctx.fillStyle = this.getNodeColor(node.type, alpha);
-        ctx.fill();
-
-        if (isSelected || p.r > 4.5) {
-          ctx.fillStyle = !selected || isSelected || isConnected
-            ? 'rgba(220, 230, 245, 0.92)'
-            : 'rgba(220, 230, 245, 0.28)';
-          ctx.font = '11px var(--font-interface, sans-serif)';
-          ctx.textAlign = 'center';
-          ctx.fillText(node.label.length > 16 ? `${node.label.slice(0, 16)}...` : node.label, p.x, p.y - p.r - 6);
-        }
-      }
-
-      this.graphAnimationFrame = requestAnimationFrame(animate);
-    };
-
-    const onClick = (event: MouseEvent) => {
-      const rect = canvas.getBoundingClientRect();
-      const x = event.clientX - rect.left;
-      const y = event.clientY - rect.top;
-
-      let hit: { id: string; dist: number } | null = null;
-      for (const node of nodes) {
-        const p = projected.get(node.id);
-        if (!p) continue;
-
-        const dx = p.x - x;
-        const dy = p.y - y;
-        const dist = Math.sqrt(dx * dx + dy * dy);
-        if (dist <= p.r + 4 && (!hit || dist < hit.dist)) {
-          hit = { id: node.id, dist };
-        }
-      }
-
-      if (hit) {
-        this.selectedNodeId = this.selectedNodeId === hit.id ? null : hit.id;
-        this.render();
-      }
-    };
-
-    resize();
-    animate();
-
-    window.addEventListener('resize', resize);
-    canvas.addEventListener('click', onClick);
-
-    this.graphCleanupFns.push(() => {
-      window.removeEventListener('resize', resize);
-      canvas.removeEventListener('click', onClick);
+  private renderProcessingState(container: HTMLElement) {
+    container.empty();
+    const processing = container.createDiv({ cls: 'palace-processing' });
+    processing.createEl('div', { cls: 'palace-processing-icon', text: '⏳' });
+    processing.createEl('div', { cls: 'palace-processing-title', text: 'Processing documents...' });
+    const stopBtn = processing.createEl('button', { cls: 'palace-stop-btn', text: '⏹ Stop Extraction' });
+    stopBtn.addEventListener('click', () => {
+      // @ts-expect-error
+      this.plugin.app.commands.executeCommandById('obsidian-ai-translate:stop-knowledge-extraction');
     });
   }
 
-  private getNodeColor(type: string, alpha: number): string {
-    switch (type) {
-      case 'entity':
-        return `rgba(88, 196, 124, ${alpha})`;
-      case 'topic':
-        return `rgba(238, 166, 80, ${alpha})`;
-      case 'fact':
-        return `rgba(168, 116, 255, ${alpha})`;
-      default:
-        return `rgba(113, 156, 255, ${alpha})`;
+  private renderEmptyState(container: HTMLElement) {
+    container.empty();
+    const empty = container.createDiv({ cls: 'palace-empty' });
+    empty.createEl('div', { cls: 'palace-empty-icon', text: '🏛️' });
+    empty.createEl('div', { cls: 'palace-empty-title', text: 'Your Memory Palace is empty' });
+    const actions = empty.createDiv({ cls: 'palace-empty-actions' });
+    const batchBtn = actions.createEl('button', { cls: 'palace-action-btn', text: '📚 Process All Documents' });
+    batchBtn.addEventListener('click', () => {
+      // @ts-expect-error
+      this.plugin.app.commands.executeCommandById('obsidian-ai-translate:extract-knowledge-batch');
+    });
+  }
+
+  private handleNodeSelection(nodeId: string | null, layout: HTMLElement) {
+    const graph = this.plugin.knowledgeGraph;
+    const stats = graph.getStats();
+
+    if (nodeId) {
+      this.selectedNode = graph.getNode(nodeId) || null;
+      this.updateDetailsPanel(layout);
+      
+      // Auto-switch to local view if graph is large
+      if (stats.nodes > 500 && !this.isLocalView) {
+        this.isLocalView = true;
+        const viewToggleBtn = layout.querySelector('.palace-action-btn-small[title*="Toggle"]') as HTMLButtonElement;
+        if (viewToggleBtn) {
+          viewToggleBtn.setText('🔍 Local View');
+          viewToggleBtn.classList.add('active');
+        }
+        this.refreshGraphDisplay();
+      } else if (this.isLocalView) {
+        this.refreshGraphDisplay();
+      }
+    } else {
+      this.selectedNode = null;
+      this.updateDetailsPanel(layout);
+      if (this.isLocalView) {
+        this.refreshGraphDisplay();
+      }
+    }
+  }
+
+  private refreshGraphDisplay() {
+    if (!this.graphRenderer || !this.plugin.knowledgeGraph) return;
+
+    if (this.isLocalView && this.selectedNode) {
+      // Show only subgraph
+      const subgraph = this.plugin.knowledgeGraph.getSubgraph(this.selectedNode.id, 1);
+      this.graphRenderer.render(subgraph);
+    } else {
+      // Show full graph
+      this.graphRenderer.render(this.plugin.knowledgeGraph);
+    }
+    
+    if (this.selectedNode) {
+      this.graphRenderer.highlightNode(this.selectedNode.id);
+    }
+  }
+
+  private renderNodeListPanel(panel: HTMLElement, graph: KnowledgeGraph, stats: { nodes: number; edges: number }) {
+    panel.empty();
+    const header = panel.createDiv({ cls: 'palace-node-list-header' });
+    header.createEl('h3', { text: `Nodes (${stats.nodes})` });
+
+    // Search bar
+    const searchContainer = panel.createDiv({ cls: 'palace-node-search' });
+    const searchInput = searchContainer.createEl('input', {
+      type: 'text',
+      placeholder: 'Search nodes...',
+      cls: 'palace-search-input',
+    });
+    searchInput.style.width = '100%';
+    searchInput.style.marginBottom = '12px';
+    searchInput.style.padding = '6px 10px';
+    searchInput.style.borderRadius = '4px';
+    searchInput.style.border = '1px solid var(--background-modifier-border)';
+    searchInput.style.background = 'var(--background-primary)';
+
+    const listContainer = panel.createDiv({ cls: 'palace-node-list-container' });
+    listContainer.style.maxHeight = '400px';
+    listContainer.style.overflowY = 'auto';
+
+    const renderItems = (query: string = '') => {
+      listContainer.empty();
+      const lowerQuery = query.toLowerCase();
+      
+      // If query is empty, show most connected. Otherwise filter.
+      const nodesToShow = query 
+        ? graph.getNodes().filter(n => n.label.toLowerCase().includes(lowerQuery)).slice(0, 50)
+        : graph.getMostConnected(30).map(item => ({ node: item.node, connections: item.connections }));
+
+      for (const itemData of nodesToShow) {
+        const { node } = itemData;
+        const connections = 'connections' in itemData 
+          ? itemData.connections 
+          : graph.getConnectionCount(node.id);
+
+        const item = listContainer.createDiv({ cls: 'palace-node-item' });
+        // ... same item styling as before but simplified for readability ...
+        item.style.display = 'flex';
+        item.style.alignItems = 'center';
+        item.style.padding = '6px 8px';
+        item.style.marginBottom = '2px';
+        item.style.borderRadius = '4px';
+        item.style.cursor = 'pointer';
+        item.style.fontSize = '13px';
+
+        const color = NODE_COLORS[node.type] || NODE_COLORS.concept;
+        const badge = item.createSpan({ cls: 'palace-node-badge' });
+        badge.style.width = '8px';
+        badge.style.height = '8px';
+        badge.style.borderRadius = '50%';
+        badge.style.background = color;
+        badge.style.marginRight = '8px';
+        badge.style.flexShrink = '0';
+
+        item.createSpan({ cls: 'palace-node-label', text: node.label });
+        const count = item.createSpan({ cls: 'palace-node-count', text: `${connections}` });
+        count.style.marginLeft = 'auto';
+        count.style.color = 'var(--text-muted)';
+        count.style.fontSize = '11px';
+
+        item.addEventListener('click', () => {
+          if (this.graphRenderer) {
+            this.graphRenderer.highlightNode(node.id);
+            const layout = panel.closest('.palace-graph-layout') as HTMLElement;
+            if (layout) this.handleNodeSelection(node.id, layout);
+          }
+        });
+
+        item.addEventListener('mouseenter', () => item.style.background = 'var(--background-modifier-hover)');
+        item.addEventListener('mouseleave', () => item.style.background = 'transparent');
+      }
+
+      if (nodesToShow.length === 0) {
+        listContainer.createDiv({ text: 'No nodes found', cls: 'palace-no-results' });
+      }
+    };
+
+    searchInput.addEventListener('input', (e) => {
+      renderItems((e.target as HTMLInputElement).value);
+    });
+
+    renderItems();
+  }
+
+  private renderLegend(legend: HTMLElement) {
+    legend.createEl('div', { cls: 'palace-legend-title', text: 'Legend' });
+
+    const items = [
+      { type: 'concept', label: 'Concept' },
+      { type: 'entity', label: 'Entity' },
+      { type: 'topic', label: 'Topic' },
+      { type: 'fact', label: 'Fact' },
+    ];
+
+    for (const item of items) {
+      const row = legend.createDiv({ cls: 'palace-legend-item' });
+      row.style.display = 'flex';
+      row.style.alignItems = 'center';
+      row.style.marginBottom = '4px';
+
+      const dot = row.createDiv({ cls: 'palace-legend-dot' });
+      dot.style.width = '10px';
+      dot.style.height = '10px';
+      dot.style.borderRadius = '50%';
+      dot.style.marginRight = '6px';
+      dot.style.backgroundColor = NODE_COLORS[item.type] || NODE_COLORS.concept;
+      row.createSpan({ text: item.label });
+    }
+  }
+
+  private renderDetailsPanel(panel: HTMLElement) {
+    panel.empty();
+
+    if (this.selectedNode) {
+      this.renderNodeDetails(panel, this.selectedNode);
+    } else {
+      panel.createDiv({
+        cls: 'palace-details-empty',
+        text: 'Select a node to view details',
+      });
+    }
+  }
+
+  private renderNodeDetails(panel: HTMLElement, node: KnowledgeNode) {
+    panel.empty();
+
+    // 1. Header with Type and Source Action
+    const header = panel.createDiv({ cls: 'palace-details-header' });
+    header.style.display = 'flex';
+    header.style.justifyContent = 'space-between';
+    header.style.alignItems = 'center';
+    header.style.marginBottom = '12px';
+
+    const color = NODE_COLORS[node.type] || NODE_COLORS.concept;
+    const badge = header.createSpan({ cls: 'palace-node-badge' });
+    badge.style.padding = '2px 8px';
+    badge.style.borderRadius = '4px';
+    badge.style.fontSize = '10px';
+    badge.style.fontWeight = 'bold';
+    badge.style.textTransform = 'uppercase';
+    badge.style.background = color + '22';
+    badge.style.color = color;
+    badge.style.border = `1px solid ${color}44`;
+    badge.setText(node.type);
+
+    if (node.sourceFile) {
+      const openBtn = header.createEl('button', {
+        cls: 'palace-action-btn-mini',
+        title: `Open ${node.sourceFile}`,
+      });
+      setIcon(openBtn, 'file-text');
+      openBtn.style.padding = '4px';
+      openBtn.addEventListener('click', () => {
+        // @ts-expect-error - internal API
+        this.plugin.app.workspace.openLinkText(node.sourceFile, '', true);
+      });
+    }
+
+    // 2. Node Title (Large & Clear)
+    const labelEl = panel.createEl('h2', { cls: 'palace-details-label', text: node.label });
+    labelEl.style.margin = '0 0 12px 0';
+    labelEl.style.fontSize = '18px';
+    labelEl.style.color = 'var(--text-accent)';
+
+    // 3. Description Section
+    if (node.description) {
+      const descSection = panel.createDiv({ cls: 'palace-details-section' });
+      descSection.style.marginBottom = '16px';
+      descSection.createEl('div', {
+        cls: 'palace-details-section-title',
+        text: 'Description',
+      });
+      const descText = descSection.createEl('div', { 
+        cls: 'palace-details-text', 
+        text: node.description 
+      });
+      descText.style.fontSize = '13px';
+      descText.style.lineHeight = '1.5';
+      descText.style.color = 'var(--text-normal)';
+      descText.style.background = 'var(--background-secondary-alt)';
+      descText.style.padding = '8px';
+      descText.style.borderRadius = '4px';
+    }
+
+    // 4. Source File Link (Explicit)
+    if (node.sourceFile) {
+      const sourceSection = panel.createDiv({ cls: 'palace-details-section' });
+      sourceSection.style.marginBottom = '16px';
+      sourceSection.createEl('div', { cls: 'palace-details-section-title', text: 'Source Document' });
+      const sourceLink = sourceSection.createEl('div', {
+        cls: 'palace-source-link-container',
+      });
+      sourceLink.style.display = 'flex';
+      sourceLink.style.alignItems = 'center';
+      sourceLink.style.gap = '6px';
+      sourceLink.style.cursor = 'pointer';
+      sourceLink.style.color = 'var(--text-muted)';
+      sourceLink.style.fontSize = '12px';
+      
+      const icon = sourceLink.createSpan();
+      setIcon(icon, 'link');
+      sourceLink.createSpan({ text: node.sourceFile });
+      
+      sourceLink.addEventListener('click', () => {
+        // @ts-expect-error - internal API
+        this.plugin.app.workspace.openLinkText(node.sourceFile, '', true);
+      });
+    }
+
+    // 5. Connections (The Connected Star-map)
+    const connections = this.plugin.knowledgeGraph.getConnections(node.id);
+    if (connections.length > 0) {
+      const connSection = panel.createDiv({ cls: 'palace-details-section' });
+      connSection.createEl('div', {
+        cls: 'palace-details-section-title',
+        text: `Connected Nodes (${connections.length})`,
+      });
+
+      const connList = connSection.createDiv({ cls: 'palace-connection-list' });
+      connList.style.display = 'flex';
+      connList.style.flexDirection = 'column';
+      connList.style.gap = '4px';
+
+      for (const { edge, node: connectedNode } of connections.slice(0, 20)) {
+        const connItem = connList.createDiv({ cls: 'palace-connection-item' });
+        connItem.style.display = 'flex';
+        connItem.style.alignItems = 'center';
+        connItem.style.padding = '6px 8px';
+        connItem.style.borderRadius = '4px';
+        connItem.style.background = 'var(--background-primary)';
+        connItem.style.border = '1px solid var(--background-modifier-border)';
+        connItem.style.cursor = 'pointer';
+        connItem.style.transition = 'all 0.2s ease';
+
+        const dot = connItem.createSpan();
+        dot.style.width = '6px';
+        dot.style.height = '6px';
+        dot.style.borderRadius = '50%';
+        dot.style.background = NODE_COLORS[connectedNode.type] || NODE_COLORS.concept;
+        dot.style.marginRight = '10px';
+
+        const label = connItem.createSpan({ text: connectedNode.label });
+        label.style.fontSize = '13px';
+        label.style.flexGrow = '1';
+
+        const edgeLabel = connItem.createSpan({ text: edge.label });
+        edgeLabel.style.fontSize = '10px';
+        edgeLabel.style.color = 'var(--text-muted)';
+        edgeLabel.style.background = 'var(--background-secondary)';
+        edgeLabel.style.padding = '2px 6px';
+        edgeLabel.style.borderRadius = '10px';
+
+        connItem.addEventListener('mouseenter', () => connItem.style.borderColor = 'var(--text-accent)');
+        connItem.addEventListener('mouseleave', () => connItem.style.borderColor = 'var(--background-modifier-border)');
+        
+        connItem.addEventListener('click', () => {
+          if (this.graphRenderer) {
+            this.graphRenderer.highlightNode(connectedNode.id);
+            this.selectedNode = connectedNode;
+            this.renderDetailsPanel(panel);
+          }
+        });
+      }
+
+      if (connections.length > 20) {
+        const more = connSection.createDiv({ 
+          text: `+ ${connections.length - 20} more connections`,
+          cls: 'palace-details-more'
+        });
+        more.style.textAlign = 'center';
+        more.style.fontSize = '11px';
+        more.style.marginTop = '8px';
+        more.style.color = 'var(--text-muted)';
+      }
+    }
+  }
+
+  private updateDetailsPanel(layout: HTMLElement) {
+    const detailsSection = layout.querySelector('.palace-details-section-container') as HTMLElement;
+    if (detailsSection) {
+      this.renderDetailsPanel(detailsSection);
+    }
+  }
+
+  private regenerateGraph() {
+    if (this.graphRenderer) {
+      this.graphRenderer.regenerate();
+      new Notice('Graph layout regenerated');
     }
   }
 
@@ -598,7 +580,22 @@ export class PalaceView extends ItemView {
       empty.createEl('div', { cls: 'palace-empty-title', text: 'No flashcards yet' });
       empty.createEl('div', {
         cls: 'palace-empty-desc',
-        text: 'Extract knowledge from a document to generate flashcards.',
+        text: 'Extract knowledge from documents to generate flashcards.',
+      });
+
+      // Add quick action button
+      const actions = empty.createDiv({ cls: 'palace-empty-actions' });
+      actions.style.marginTop = '20px';
+
+      const batchBtn = actions.createEl('button', {
+        cls: 'palace-action-btn',
+        text: '📚 Process All Documents',
+      });
+      batchBtn.style.width = '100%';
+      batchBtn.style.padding = '10px';
+      batchBtn.addEventListener('click', () => {
+        // @ts-expect-error - accessing internal command
+        this.plugin.app.commands.executeCommandById('obsidian-ai-translate:extract-knowledge-batch');
       });
       return;
     }
