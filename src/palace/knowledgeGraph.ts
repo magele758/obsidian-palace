@@ -2,7 +2,20 @@
  * Knowledge Graph - storage and query layer for the Memory Palace.
  *
  * Data is stored as JSON in the plugin data directory.
+ * Supports text search and embedding-based semantic search (LAION/aella-style).
  */
+
+function cosineSimilarity(a: number[], b: number[]): number {
+  if (a.length !== b.length) return 0;
+  let dot = 0, normA = 0, normB = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    normA += a[i] * a[i];
+    normB += b[i] * b[i];
+  }
+  const denom = Math.sqrt(normA) * Math.sqrt(normB);
+  return denom > 0 ? dot / denom : 0;
+}
 
 import type {
   KnowledgeNode,
@@ -97,6 +110,23 @@ export class KnowledgeGraph {
         n.label.toLowerCase().includes(lower) ||
         n.description.toLowerCase().includes(lower)
     );
+  }
+
+  /**
+   * Semantic search (LAION/aella-style): find nodes by embedding similarity.
+   * Returns nodes with embedding, sorted by cosine similarity (desc).
+   * Nodes without embedding are excluded.
+   */
+  findNodesSemantic(queryVector: number[], limit = 30): Array<{ node: KnowledgeNode; score: number }> {
+    const withEmbed = this.data.nodes.filter(n => n.embedding && n.embedding.length === queryVector.length);
+    if (withEmbed.length === 0) return [];
+
+    const scores = withEmbed.map(node => {
+      const score = cosineSimilarity(queryVector, node.embedding!);
+      return { node, score };
+    });
+    scores.sort((a, b) => b.score - a.score);
+    return scores.slice(0, limit);
   }
 
   /* ---- Edges ---- */

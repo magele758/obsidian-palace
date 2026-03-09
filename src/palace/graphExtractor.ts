@@ -61,8 +61,14 @@ export class GraphExtractor {
 
   /**
    * Extract knowledge graph data from a document
+   * @param options.embedding - if true, compute embeddings for nodes (LAION/aella-style semantic search)
+   * @param options.embeddingModel - embedding model name
    */
-  async extract(content: string, sourceFile?: string): Promise<ExtractionResult> {
+  async extract(
+    content: string,
+    sourceFile?: string,
+    options?: { embedding?: boolean; embeddingModel?: string }
+  ): Promise<ExtractionResult> {
     const messages: LLMMessage[] = [
       { role: 'system', content: EXTRACTION_PROMPT },
       { role: 'user', content: `Document:\n\n${content}` },
@@ -130,6 +136,19 @@ export class GraphExtractor {
       easeFactor: 2.5,
       nextReview: now,
     }));
+
+    // Compute embeddings for semantic search (LAION/aella-style)
+    if (options?.embedding && nodes.length > 0) {
+      const texts = nodes.map(n => `${n.label}. ${n.description}`.slice(0, 8000));
+      try {
+        const embeddings = await this.llmClient.createEmbeddings(texts, options.embeddingModel);
+        for (let i = 0; i < nodes.length; i++) {
+          if (embeddings[i]?.vector) nodes[i].embedding = embeddings[i].vector;
+        }
+      } catch (e) {
+        console.warn('Obsidian Palace: Embedding computation failed, nodes saved without embeddings:', e);
+      }
+    }
 
     return { nodes, edges, flashcards };
   }

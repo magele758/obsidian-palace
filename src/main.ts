@@ -369,6 +369,18 @@ export default class ObsidianPalacePlugin extends Plugin {
     });
   }
 
+  /** Create embedding for semantic search (used by Palace view) */
+  async createQueryEmbedding(query: string): Promise<number[] | null> {
+    if (!query.trim() || !this.settings.apiKey) return null;
+    try {
+      const client = this.createLLMClient();
+      const emb = await client.createEmbedding(query.trim(), this.settings.embeddingModel);
+      return emb?.vector ?? null;
+    } catch {
+      return null;
+    }
+  }
+
   async extractKnowledge() {
     if (!this.validateLLMSettings()) return;
 
@@ -394,7 +406,10 @@ export default class ObsidianPalacePlugin extends Plugin {
 
     try {
       const extractor = new GraphExtractor(this.createLLMClient());
-      const result = await extractor.extract(content, file.path);
+      const result = await extractor.extract(content, file.path, {
+        embedding: this.settings.embeddingEnabled,
+        embeddingModel: this.settings.embeddingModel,
+      });
 
       // Merge into knowledge graph
       this.knowledgeGraph.merge(result.nodes, result.edges);
@@ -516,7 +531,10 @@ export default class ObsidianPalacePlugin extends Plugin {
 
         // Create a new extractor for each concurrent request
         const extractor = new GraphExtractor(this.createLLMClient());
-        const result = await extractor.extract(content, file.path);
+        const result = await extractor.extract(content, file.path, {
+          embedding: this.settings.embeddingEnabled,
+          embeddingModel: this.settings.embeddingModel,
+        });
 
         if (signal.aborted) return null;
 

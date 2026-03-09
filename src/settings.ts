@@ -30,6 +30,9 @@ export interface PalaceSettings {
   // Palace settings
   palaceEnabled: boolean;
   palaceConcurrency: number;
+  // Embedding (LAION/aella-style semantic search)
+  embeddingEnabled: boolean;
+  embeddingModel: string;
 
   // Vault QA settings (text-based search only)
   vaultQAEnabled: boolean;
@@ -54,6 +57,8 @@ export const DEFAULT_SETTINGS: Partial<PalaceSettings> = {
   skillDirectories: ['~/.claude/skills', '~/.codex/skills', '~/.agents/skills'],
   palaceEnabled: true,
   palaceConcurrency: 10,
+  embeddingEnabled: false,
+  embeddingModel: 'text-embedding-3-small',
   // Vault QA defaults (text-based search)
   vaultQAEnabled: false,
   obsidianWeight: 0.6,
@@ -239,6 +244,31 @@ export class PalaceSettingTab extends PluginSettingTab {
           .setValue(this.plugin.settings.palaceEnabled)
           .onChange(async (value) => {
             this.plugin.settings.palaceEnabled = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName('Enable Embedding (Semantic Search)')
+      .setDesc('Compute embeddings for nodes (LAION/aella-style). Enables semantic search in graph. Requires embedding API.')
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.embeddingEnabled ?? false)
+          .onChange(async (value) => {
+            this.plugin.settings.embeddingEnabled = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName('Embedding Model')
+      .setDesc('OpenAI-compatible embedding model (e.g. text-embedding-3-small, text-embedding-ada-002)')
+      .addText((text) =>
+        text
+          .setPlaceholder('text-embedding-3-small')
+          .setValue(this.plugin.settings.embeddingModel || 'text-embedding-3-small')
+          .onChange(async (value) => {
+            this.plugin.settings.embeddingModel = value || 'text-embedding-3-small';
             await this.plugin.saveSettings();
           })
       );

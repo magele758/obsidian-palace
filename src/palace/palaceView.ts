@@ -23,11 +23,14 @@ export const PALACE_VIEW_TYPE = 'palace-view';
 
 type ViewMode = 'graph' | 'review' | 'stats';
 type GraphType = '2d' | '3d';
+type SearchMode = 'text' | 'semantic';
 
 export class PalaceView extends ItemView {
   plugin: ObsidianPalacePlugin;
   private mode: ViewMode = 'graph';
   private graphType: GraphType = '2d';
+  private searchMode: SearchMode = 'text';
+  private semanticSearchDebounce: ReturnType<typeof setTimeout> | null = null;
   private container: HTMLElement;
   private currentReviewCard: Flashcard | null = null;
   private showAnswer = false;
@@ -279,11 +282,36 @@ export class PalaceView extends ItemView {
     const header = panel.createDiv({ cls: 'palace-node-list-header' });
     header.createEl('h3', { text: `Nodes (${stats.nodes})` });
 
+    // Search mode toggle (Text | Semantic)
+    const modeRow = panel.createDiv({ cls: 'palace-search-mode-row' });
+    modeRow.style.display = 'flex';
+    modeRow.style.gap = '8px';
+    modeRow.style.marginBottom = '8px';
+    const textBtn = modeRow.createEl('button', { cls: 'palace-search-mode-btn', text: 'Text' });
+    const semanticBtn = modeRow.createEl('button', { cls: 'palace-search-mode-btn', text: 'Semantic' });
+    const hasEmbeddings = graph.getNodes().some(n => n.embedding?.length);
+    const updateModeBtns = () => {
+      textBtn.classList.toggle('active', this.searchMode === 'text');
+      semanticBtn.classList.toggle('active', this.searchMode === 'semantic');
+      semanticBtn.title = hasEmbeddings ? 'LAION/aella-style embedding search' : 'Enable embedding in settings and re-extract';
+      semanticBtn.style.opacity = hasEmbeddings ? '1' : '0.6';
+    };
+    const doSearch = (q: string) => {
+      if (this.searchMode === 'semantic' && q.trim() && hasEmbeddings) {
+        runSemanticSearch(q);
+      } else {
+        renderItems(q);
+      }
+    };
+    textBtn.addEventListener('click', () => { this.searchMode = 'text'; updateModeBtns(); renderItems(searchInput.value); });
+    semanticBtn.addEventListener('click', () => { this.searchMode = 'semantic'; updateModeBtns(); doSearch(searchInput.value); });
+    updateModeBtns();
+
     // Search bar
     const searchContainer = panel.createDiv({ cls: 'palace-node-search' });
     const searchInput = searchContainer.createEl('input', {
       type: 'text',
-      placeholder: 'Search nodes...',
+      placeholder: this.searchMode === 'semantic' ? 'Semantic search...' : 'Search nodes...',
       cls: 'palace-search-input',
     });
     searchInput.style.width = '100%';
@@ -300,65 +328,113 @@ export class PalaceView extends ItemView {
     const renderItems = (query: string = '') => {
       listContainer.empty();
       const lowerQuery = query.toLowerCase();
-      
-      // If query is empty, show most connected. Otherwise filter.
-      const nodesToShow = query 
+
+      if (this.searchMode === 'semantic' && query.trim()) {
+        if (!hasEmbeddings) {
+          listContainer.createDiv({ text: 'No embeddings. Enable in settings and re-extract.', cls: 'palace-no-results' });
+          return;
+        }
+        // Semantic: will be filled async
+        listContainer.createDiv({ text: 'Searching...', cls: 'palace-no-results' });
+        return;
+      }
+
+      // Text search or empty query
+      const nodesToShow = query
         ? graph.getNodes().filter(n => n.label.toLowerCase().includes(lowerQuery)).slice(0, 50)
         : graph.getMostConnected(30).map(item => ({ node: item.node, connections: item.connections }));
 
-      for (const itemData of nodesToShow) {
-        const { node } = itemData;
-        const connections = 'connections' in itemData 
-          ? itemData.connections 
-          : graph.getConnectionCount(node.id);
+      this.renderNodeItems(listContainer, panel, graph, nodesToShow);
+    };
 
-        const item = listContainer.createDiv({ cls: 'palace-node-item' });
-        // ... same item styling as before but simplified for readability ...
-        item.style.display = 'flex';
-        item.style.alignItems = 'center';
-        item.style.padding = '6px 8px';
-        item.style.marginBottom = '2px';
-        item.style.borderRadius = '4px';
-        item.style.cursor = 'pointer';
-        item.style.fontSize = '13px';
-
-        const color = NODE_COLORS[node.type] || NODE_COLORS.concept;
-        const badge = item.createSpan({ cls: 'palace-node-badge' });
-        badge.style.width = '8px';
-        badge.style.height = '8px';
-        badge.style.borderRadius = '50%';
-        badge.style.background = color;
-        badge.style.marginRight = '8px';
-        badge.style.flexShrink = '0';
-
-        item.createSpan({ cls: 'palace-node-label', text: node.label });
-        const count = item.createSpan({ cls: 'palace-node-count', text: `${connections}` });
-        count.style.marginLeft = 'auto';
-        count.style.color = 'var(--text-muted)';
-        count.style.fontSize = '11px';
-
-        item.addEventListener('click', () => {
-          if (this.graphRenderer) {
-            this.graphRenderer.highlightNode(node.id);
-            const layout = panel.closest('.palace-graph-layout') as HTMLElement;
-            if (layout) this.handleNodeSelection(node.id, layout);
-          }
-        });
-
-        item.addEventListener('mouseenter', () => item.style.background = 'var(--background-modifier-hover)');
-        item.addEventListener('mouseleave', () => item.style.background = 'transparent');
+    const runSemanticSearch = async (query: string) => {
+      if (!query.trim() || !hasEmbeddings) {
+        renderItems(query);
+        return;
       }
-
-      if (nodesToShow.length === 0) {
-        listContainer.createDiv({ text: 'No nodes found', cls: 'palace-no-results' });
+      listContainer.empty();
+      listContainer.createDiv({ text: 'Searching...', cls: 'palace-no-results' });
+      const vec = await this.plugin.createQueryEmbedding(query);
+      listContainer.empty();
+      if (!vec) {
+        listContainer.createDiv({ text: 'Embedding failed. Check API settings.', cls: 'palace-no-results' });
+        return;
       }
+      const results = graph.findNodesSemantic(vec, 50);
+      const nodesToShow = results.map(r => ({ node: r.node, connections: graph.getConnectionCount(r.node.id), score: r.score }));
+      this.renderNodeItems(listContainer, panel, graph, nodesToShow, true);
     };
 
     searchInput.addEventListener('input', (e) => {
-      renderItems((e.target as HTMLInputElement).value);
+      const val = (e.target as HTMLInputElement).value;
+      if (this.semanticSearchDebounce) {
+        clearTimeout(this.semanticSearchDebounce);
+        this.semanticSearchDebounce = null;
+      }
+      if (this.searchMode === 'semantic' && val.trim()) {
+        listContainer.empty();
+        listContainer.createDiv({ text: 'Searching...', cls: 'palace-no-results' });
+        this.semanticSearchDebounce = setTimeout(() => runSemanticSearch(val), 400);
+      } else {
+        renderItems(val);
+      }
     });
 
     renderItems();
+  }
+
+  private renderNodeItems(
+    listContainer: HTMLElement,
+    panel: HTMLElement,
+    graph: KnowledgeGraph,
+    nodesToShow: Array<{ node: KnowledgeNode; connections: number } | { node: KnowledgeNode; connections: number; score?: number }>,
+    showScore = false
+  ) {
+    listContainer.empty();
+    for (const itemData of nodesToShow) {
+      const { node } = itemData;
+      const connections = itemData.connections;
+      const score = 'score' in itemData ? itemData.score : undefined;
+
+      const item = listContainer.createDiv({ cls: 'palace-node-item' });
+      item.style.display = 'flex';
+      item.style.alignItems = 'center';
+      item.style.padding = '6px 8px';
+      item.style.marginBottom = '2px';
+      item.style.borderRadius = '4px';
+      item.style.cursor = 'pointer';
+      item.style.fontSize = '13px';
+
+      const color = NODE_COLORS[node.type] || NODE_COLORS.concept;
+      const badge = item.createSpan({ cls: 'palace-node-badge' });
+      badge.style.width = '8px';
+      badge.style.height = '8px';
+      badge.style.borderRadius = '50%';
+      badge.style.background = color;
+      badge.style.marginRight = '8px';
+      badge.style.flexShrink = '0';
+
+      item.createSpan({ cls: 'palace-node-label', text: node.label });
+      const count = item.createSpan({ cls: 'palace-node-count', text: showScore && score !== undefined ? score.toFixed(2) : `${connections}` });
+      count.style.marginLeft = 'auto';
+      count.style.color = 'var(--text-muted)';
+      count.style.fontSize = '11px';
+
+      item.addEventListener('click', () => {
+        if (this.graphRenderer) {
+          this.graphRenderer.highlightNode(node.id);
+          const layout = panel.closest('.palace-graph-layout') as HTMLElement;
+          if (layout) this.handleNodeSelection(node.id, layout);
+        }
+      });
+
+      item.addEventListener('mouseenter', () => item.style.background = 'var(--background-modifier-hover)');
+      item.addEventListener('mouseleave', () => item.style.background = 'transparent');
+    }
+
+    if (nodesToShow.length === 0) {
+      listContainer.createDiv({ text: 'No nodes found', cls: 'palace-no-results' });
+    }
   }
 
   private renderLegend(legend: HTMLElement) {

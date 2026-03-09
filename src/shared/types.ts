@@ -118,6 +118,8 @@ export interface KnowledgeNode {
   description: string;
   sourceFile?: string;
   createdAt: number;
+  /** 768-dim embedding for semantic search (LAION/aella-style) */
+  embedding?: number[];
 }
 
 export interface KnowledgeEdge {
