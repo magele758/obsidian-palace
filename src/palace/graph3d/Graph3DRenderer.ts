@@ -66,6 +66,19 @@ export class Graph3DRenderer {
   private nodeGlows: Map<string, THREE.Mesh[]> = new Map();
   private nodeSizes: Map<string, number> = new Map();
 
+  // Merged edge rendering — one draw call for all edges
+  private allEdgesSegments: THREE.LineSegments | null = null;
+  private highlightedEdgesSegments: THREE.LineSegments | null = null;
+  private edgeSegmentIndex: Map<string, number> = new Map();
+
+  // Demand-based rendering: only run RAF loop when something changes
+  private needsRender = false;
+  private controlsDampingFrames = 0;
+
+  // Bound event handlers stored for correct removeEventListener in dispose()
+  private boundHandleResize: () => void;
+  private boundHandleClick: (e: MouseEvent) => void;
+
   constructor(container: HTMLElement, config?: Partial<Graph3DConfig>) {
     this.container = container;
     this.config = { ...DEFAULT_CONFIG, ...config };
@@ -139,9 +152,12 @@ export class Graph3DRenderer {
     // Add subtle sphere glow
     this.createSphereGlow();
 
+    // Store bound handlers before registering them
+    this.boundHandleResize = this.handleResize.bind(this);
+    this.boundHandleClick = this.handleClick.bind(this);
+
     // Event listeners
     this.setupEventListeners();
-    this.startAnimation();
   }
 
   private setupLighting(): void {
@@ -221,11 +237,19 @@ export class Graph3DRenderer {
   }
 
   private setupEventListeners(): void {
-    // Click to select
-    this.renderer.domElement.addEventListener('click', this.handleClick.bind(this));
+    this.renderer.domElement.addEventListener('click', this.boundHandleClick);
+    window.addEventListener('resize', this.boundHandleResize);
 
-    // Resize handler
-    window.addEventListener('resize', this.handleResize.bind(this));
+    // Wake the render loop when the user interacts with OrbitControls
+    this.controls.addEventListener('start', () => {
+      // Keep running indefinitely while dragging/pinching
+      this.controlsDampingFrames = 9999;
+      this.startAnimation();
+    });
+    this.controls.addEventListener('end', () => {
+      // Allow damping to finish over the next ~60 frames then stop
+      this.controlsDampingFrames = 60;
+    });
   }
 
   private handleClick(event: MouseEvent): void {
@@ -277,34 +301,53 @@ export class Graph3DRenderer {
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(width, height);
+    this.needsRender = true;
+    this.startAnimation();
   }
 
+  /* ---- Demand-based render loop ---- */
+
   private startAnimation(): void {
+    if (this.animationId !== null) return; // already running
+
     const animate = () => {
       if (this.isDisposed) return;
-      this.animationId = requestAnimationFrame(animate);
 
+      const simActive = this.simulationAlpha > 0.01 && !!this.graph;
+      const controlsActive = this.controlsDampingFrames > 0;
+
+      if (!simActive && !controlsActive && !this.needsRender) {
+        // Truly idle: stop the loop entirely
+        this.animationId = null;
+        return;
+      }
+
+      this.animationId = requestAnimationFrame(animate);
       this.time += 0.016;
 
-      // Progressive Physics Simulation (The '2D Method' in 3D)
-      if (this.simulationAlpha > 0.01 && this.graph) {
+      if (simActive) {
         this.simulateStep();
         this.updateStarPositions();
-        this.simulationAlpha *= 0.98; // Cool down
+        this.simulationAlpha *= 0.98;
+        if (this.simulationAlpha <= 0.01) {
+          // Snap to zero and request one final frame
+          this.simulationAlpha = 0;
+          this.needsRender = true;
+        }
       }
 
-      // Slowly rotate particle system
-      if (this.nodePoints) {
-        this.nodePoints.rotation.y += 0.0001;
-      }
-      if (this.particleSystem) {
-        this.particleSystem.rotation.y += 0.0001;
-      }
+      // Slowly rotate background particles only while loop is active
+      if (this.particleSystem) this.particleSystem.rotation.y += 0.0001;
+      if (this.nodePoints) this.nodePoints.rotation.y += 0.0001;
 
       this.controls.update();
       this.renderer.render(this.scene, this.camera);
+
+      if (this.controlsDampingFrames > 0) this.controlsDampingFrames--;
+      this.needsRender = false;
     };
-    animate();
+
+    this.animationId = requestAnimationFrame(animate);
   }
 
   private simulateStep(): void {
@@ -407,16 +450,20 @@ export class Graph3DRenderer {
       }
     }
     
-    // Update edge lines
-    for (const edge3D of this.edges.values()) {
-      const s = this.nodes.get(edge3D.sourceId);
-      const t = this.nodes.get(edge3D.targetId);
-      if (s && t) {
-        const positions = edge3D.line.geometry.attributes.position.array as Float32Array;
-        positions[0] = s.position.x; positions[1] = s.position.y; positions[2] = s.position.z;
-        positions[3] = t.position.x; positions[4] = t.position.y; positions[5] = t.position.z;
-        edge3D.line.geometry.attributes.position.needsUpdate = true;
+    // Update merged edge line segments
+    if (this.allEdgesSegments) {
+      const positions = this.allEdgesSegments.geometry.attributes.position.array as Float32Array;
+      for (const [edgeId, edge3D] of this.edges) {
+        const segIdx = this.edgeSegmentIndex.get(edgeId);
+        if (segIdx === undefined) continue;
+        const s = this.nodes.get(edge3D.sourceId);
+        const t = this.nodes.get(edge3D.targetId);
+        if (!s || !t) continue;
+        const base = segIdx * 6;
+        positions[base]     = s.position.x; positions[base + 1] = s.position.y; positions[base + 2] = s.position.z;
+        positions[base + 3] = t.position.x; positions[base + 4] = t.position.y; positions[base + 5] = t.position.z;
       }
+      this.allEdgesSegments.geometry.attributes.position.needsUpdate = true;
     }
   }
 
@@ -457,7 +504,7 @@ export class Graph3DRenderer {
       this.nodeSizes.set(nodeId, normalizedSize);
     }
 
-    // Initialize random positions within a sphere instead of pre-calculating
+    // Initialize random positions within a sphere
     const positions = new Map<string, THREE.Vector3>();
     const radius = this.config.sphereRadius;
     for (const node of nodes) {
@@ -474,7 +521,6 @@ export class Graph3DRenderer {
     // Rendering optimization threshold
     const useStarrySky = nodes.length > 2500;
     const useInstancedRendering = nodes.length > 100 && !useStarrySky;
-    const useStraightEdges = nodes.length > 250;
 
     if (useStarrySky) {
       this.renderStarryNodes(nodes, positions, connectionCounts);
@@ -491,45 +537,60 @@ export class Graph3DRenderer {
       }
     }
 
-    // Create edge lines with threshold-based curves (Dynamic geometry)
-    for (const edge of edges) {
-      const edge3D = this.createDynamicEdge(edge, useStraightEdges);
-      if (edge3D) {
-        this.edges.set(edge.id, edge3D);
-      }
-    }
+    // Build merged LineSegments for all edges (one GPU draw call)
+    this.buildMergedEdges(edges);
 
     // Start progressive simulation
     this.simulationAlpha = 1.0;
+    this.needsRender = true;
+    this.startAnimation();
   }
 
-  private createDynamicEdge(edge: KnowledgeEdge, straight: boolean): Edge3D | null {
-    const s = this.nodes.get(edge.source);
-    const t = this.nodes.get(edge.target);
-    if (!s || !t) return null;
+  /**
+   * Build a single THREE.LineSegments containing all edges.
+   * This replaces per-edge THREE.Line objects for far better GPU performance.
+   */
+  private buildMergedEdges(edges: KnowledgeEdge[]): void {
+    this.edgeSegmentIndex.clear();
+
+    // Pre-allocate for maximum possible edges
+    const tempPositions = new Float32Array(edges.length * 6);
+    let validCount = 0;
+
+    for (const edge of edges) {
+      const s = this.nodes.get(edge.source);
+      const t = this.nodes.get(edge.target);
+      if (!s || !t) continue;
+
+      const base = validCount * 6;
+      tempPositions[base]     = s.position.x; tempPositions[base + 1] = s.position.y; tempPositions[base + 2] = s.position.z;
+      tempPositions[base + 3] = t.position.x; tempPositions[base + 4] = t.position.y; tempPositions[base + 5] = t.position.z;
+
+      this.edgeSegmentIndex.set(edge.id, validCount);
+      this.edges.set(edge.id, {
+        id: edge.id,
+        line: null as any, // shared geometry; individual line not used
+        sourceId: edge.source,
+        targetId: edge.target,
+        weight: edge.weight,
+      });
+
+      validCount++;
+    }
+
+    if (validCount === 0) return;
 
     const geometry = new THREE.BufferGeometry();
-    const positions = new Float32Array(2 * 3);
-    positions[0] = s.position.x; positions[1] = s.position.y; positions[2] = s.position.z;
-    positions[3] = t.position.x; positions[4] = t.position.y; positions[5] = t.position.z;
-    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    geometry.setAttribute('position', new THREE.BufferAttribute(tempPositions.slice(0, validCount * 6), 3));
 
     const material = new THREE.LineBasicMaterial({
       color: 0x4a4a6a,
       transparent: true,
-      opacity: 0.04, // Very subtle for starry sky
+      opacity: 0.04,
     });
 
-    const line = new THREE.Line(geometry, material);
-    this.scene.add(line);
-
-    return {
-      id: edge.id,
-      line,
-      sourceId: edge.source,
-      targetId: edge.target,
-      weight: edge.weight,
-    };
+    this.allEdgesSegments = new THREE.LineSegments(geometry, material);
+    this.scene.add(this.allEdgesSegments);
   }
 
   private renderStarryNodes(
@@ -694,15 +755,12 @@ export class Graph3DRenderer {
   private createNode(node: KnowledgeNode, position: THREE.Vector3, connections: number): Node3D {
     const color = NODE_TYPE_COLORS[node.type] || NODE_TYPE_COLORS.concept;
     
-    // Calculate node radius based on connections - more dramatic size variation
     const sizeMultiplier = this.nodeSizes.get(node.id) || 1;
-    // Base size scales from 0.4 (isolated) to 2.5 (highly connected)
     const nodeRadius = this.config.nodeRadius * sizeMultiplier;
 
-    // Create glowing orb effect with fewer layers for performance
     const glowMeshes: THREE.Mesh[] = [];
 
-    // 1. Inner core - bright center
+    // 1. Inner core
     const coreGeometry = new THREE.SphereGeometry(nodeRadius * 0.4, 12, 12);
     const coreMaterial = new THREE.MeshBasicMaterial({
       color: 0xffffff,
@@ -714,8 +772,7 @@ export class Graph3DRenderer {
     this.scene.add(coreMesh);
     glowMeshes.push(coreMesh);
 
-    // 2. Main sphere - semi-transparent with emissive effect
-    // Using MeshPhongMaterial instead of MeshPhysicalMaterial for performance
+    // 2. Main sphere
     const mainGeometry = new THREE.SphereGeometry(nodeRadius, 16, 16);
     const mainMaterial = new THREE.MeshPhongMaterial({
       color: color,
@@ -732,7 +789,7 @@ export class Graph3DRenderer {
     mesh.userData.originalPosition = position.clone();
     this.scene.add(mesh);
 
-    // 3. Single outer glow layer instead of multiple
+    // 3. Single outer glow layer
     const glowGeometry = new THREE.SphereGeometry(nodeRadius * 2.2, 16, 16);
     const glowMaterial = new THREE.MeshBasicMaterial({
       color: color,
@@ -745,10 +802,8 @@ export class Graph3DRenderer {
     this.scene.add(glowMesh);
     glowMeshes.push(glowMesh);
 
-    // Store glow meshes for cleanup and animation
     this.nodeGlows.set(node.id, glowMeshes);
 
-    // Create label sprite
     const label = this.createLabel(node.label, position, nodeRadius);
     if (label) {
       this.scene.add(label);
@@ -810,16 +865,11 @@ export class Graph3DRenderer {
     if (straight) {
       geometry = new THREE.BufferGeometry().setFromPoints([start, end]);
     } else {
-      // Create curved line between nodes for more 3D feel
       const mid = start.clone().add(end).multiplyScalar(0.5);
-
-      // Push midpoint slightly outward from center for arc effect
       const toCenter = mid.clone().normalize();
       mid.add(toCenter.multiplyScalar(this.config.sphereRadius * 0.15));
-
-      // Create quadratic bezier curve
       const curve = new THREE.QuadraticBezierCurve3(start, mid, end);
-      const points = curve.getPoints(12); // Reduced from 20 for performance
+      const points = curve.getPoints(12);
       geometry = new THREE.BufferGeometry().setFromPoints(points);
     }
 
@@ -870,15 +920,16 @@ export class Graph3DRenderer {
     if (this.onSelectCallback) {
       this.onSelectCallback(nodeId);
     }
+
+    this.needsRender = true;
+    this.startAnimation();
   }
 
   private focusOnNode(targetPosition: THREE.Vector3): void {
-    const distance = 150; // Distance to stop from node
+    const distance = 150;
     const direction = this.camera.position.clone().sub(this.controls.target).normalize();
     const newCameraPos = targetPosition.clone().add(direction.multiplyScalar(distance));
     
-    // Smooth transition using simple lerp in the animation loop would be better, 
-    // but for now we set it directly and update controls
     this.camera.position.copy(newCameraPos);
     this.controls.target.copy(targetPosition);
     this.controls.update();
@@ -910,10 +961,9 @@ export class Graph3DRenderer {
       
       const targetScale = isSelected ? originalScale * 1.5 : 
                          isHighlighted ? originalScale * 1.3 : 
-                         this.selectionState.selectedNodeId ? 0 : originalScale; // Hide if not highlighted
+                         this.selectionState.selectedNodeId ? 0 : originalScale;
 
       if (isInstanced) {
-        // ... (InstancedMesh logic)
         const position = this.nodePositions.get(id)!;
         dummy.position.copy(position);
         dummy.scale.setScalar(targetScale);
@@ -929,12 +979,11 @@ export class Graph3DRenderer {
         if (isSelected) {
           color.multiplyScalar(1.5);
         } else if (!isHighlighted && this.selectionState.selectedNodeId) {
-          color.setHex(0x000000); // Completely dark if hidden
+          color.setHex(0x000000);
         }
         
         this.nodeInstances!.setColorAt(index, color);
       } else {
-        // Individual mesh update
         node3D.mesh.scale.setScalar(targetScale);
         node3D.mesh.visible = targetScale > 0;
         
@@ -964,7 +1013,6 @@ export class Graph3DRenderer {
         if (isSelected) node3D.label.scale.set(70, 16, 1);
         else node3D.label.scale.set(50, 12, 1);
       } else if (isSelected) {
-        // Starry Sky Mode: Dynamic label generation for selected node
         const label = this.createLabel(node3D.node.label, node3D.position, 10);
         if (label) {
           this.scene.add(label);
@@ -982,19 +1030,45 @@ export class Graph3DRenderer {
       if (this.nodeInstances!.instanceColor) this.nodeInstances!.instanceColor.needsUpdate = true;
     }
 
-    // 2. Update edges
-    for (const [id, edge3D] of this.edges) {
-      const isHighlighted = this.selectionState.highlightedEdgeIds.has(id);
-      const material = edge3D.line.material as THREE.LineBasicMaterial;
-
-      if (isHighlighted) {
-        material.color.setHex(0x00ffd5);
-        material.opacity = 0.95;
-      } else {
-        material.color.setHex(0x2a2a4a);
-        material.opacity = this.selectionState.selectedNodeId ? 0.02 : 0.15;
-      }
+    // 2. Update edges: rebuild highlighted LineSegments and dim the main one
+    this.rebuildHighlightedEdges();
+    if (this.allEdgesSegments) {
+      (this.allEdgesSegments.material as THREE.LineBasicMaterial).opacity = 0.02;
     }
+  }
+
+  /**
+   * Rebuild the highlighted-edges LineSegments based on current selection state.
+   */
+  private rebuildHighlightedEdges(): void {
+    // Dispose previous highlight geometry
+    if (this.highlightedEdgesSegments) {
+      this.scene.remove(this.highlightedEdgesSegments);
+      this.highlightedEdgesSegments.geometry.dispose();
+      (this.highlightedEdgesSegments.material as THREE.Material).dispose();
+      this.highlightedEdgesSegments = null;
+    }
+
+    const hlPositions: number[] = [];
+    for (const edgeId of this.selectionState.highlightedEdgeIds) {
+      const edge3D = this.edges.get(edgeId);
+      if (!edge3D) continue;
+      const s = this.nodes.get(edge3D.sourceId);
+      const t = this.nodes.get(edge3D.targetId);
+      if (!s || !t) continue;
+      hlPositions.push(
+        s.position.x, s.position.y, s.position.z,
+        t.position.x, t.position.y, t.position.z
+      );
+    }
+
+    if (hlPositions.length === 0) return;
+
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(hlPositions), 3));
+    const mat = new THREE.LineBasicMaterial({ color: 0x00ffd5, transparent: true, opacity: 0.95 });
+    this.highlightedEdgesSegments = new THREE.LineSegments(geo, mat);
+    this.scene.add(this.highlightedEdgesSegments);
   }
 
   private clearHighlight(): void {
@@ -1058,12 +1132,15 @@ export class Graph3DRenderer {
       if (this.nodeInstances!.instanceColor) this.nodeInstances!.instanceColor.needsUpdate = true;
     }
 
-    // Reset edges
-    for (const edge3D of this.edges.values()) {
-      edge3D.line.visible = true;
-      const material = edge3D.line.material as THREE.LineBasicMaterial;
-      material.color.setHex(0x4a4a6a);
-      material.opacity = 0.04;
+    // Remove highlighted edges overlay and restore main edge opacity
+    if (this.highlightedEdgesSegments) {
+      this.scene.remove(this.highlightedEdgesSegments);
+      this.highlightedEdgesSegments.geometry.dispose();
+      (this.highlightedEdgesSegments.material as THREE.Material).dispose();
+      this.highlightedEdgesSegments = null;
+    }
+    if (this.allEdgesSegments) {
+      (this.allEdgesSegments.material as THREE.LineBasicMaterial).opacity = 0.04;
     }
   }
 
@@ -1072,6 +1149,8 @@ export class Graph3DRenderer {
    */
   clearSelection(): void {
     this.clearHighlight();
+    this.needsRender = true;
+    this.startAnimation();
     if (this.onSelectCallback) {
       this.onSelectCallback(null);
     }
@@ -1127,7 +1206,7 @@ export class Graph3DRenderer {
     }
 
     // Remove all node glow meshes
-    for (const [nodeId, glows] of this.nodeGlows) {
+    for (const glows of this.nodeGlows.values()) {
       for (const glowMesh of glows) {
         this.scene.remove(glowMesh);
         glowMesh.geometry.dispose();
@@ -1139,7 +1218,7 @@ export class Graph3DRenderer {
 
     // Remove all nodes
     for (const node3D of this.nodes.values()) {
-      if (node3D.mesh && node3D.mesh.geometry) { // Mesh might be instancedMesh shared reference
+      if (node3D.mesh && node3D.mesh.geometry) {
         if (node3D.mesh.type === 'Mesh') {
           this.scene.remove(node3D.mesh);
           node3D.mesh.geometry.dispose();
@@ -1156,13 +1235,21 @@ export class Graph3DRenderer {
     this.nodeColors.clear();
     this.nodeScales.clear();
 
-    // Remove all edges
-    for (const edge3D of this.edges.values()) {
-      this.scene.remove(edge3D.line);
-      edge3D.line.geometry.dispose();
-      (edge3D.line.material as THREE.Material).dispose();
+    // Remove merged edge geometry (one object for all edges)
+    if (this.allEdgesSegments) {
+      this.scene.remove(this.allEdgesSegments);
+      this.allEdgesSegments.geometry.dispose();
+      (this.allEdgesSegments.material as THREE.Material).dispose();
+      this.allEdgesSegments = null;
+    }
+    if (this.highlightedEdgesSegments) {
+      this.scene.remove(this.highlightedEdgesSegments);
+      this.highlightedEdgesSegments.geometry.dispose();
+      (this.highlightedEdgesSegments.material as THREE.Material).dispose();
+      this.highlightedEdgesSegments = null;
     }
     this.edges.clear();
+    this.edgeSegmentIndex.clear();
 
     // Clear selection state
     this.selectionState = {
@@ -1183,7 +1270,9 @@ export class Graph3DRenderer {
       this.animationId = null;
     }
 
-    window.removeEventListener('resize', this.handleResize.bind(this));
+    // Use stored bound references so removeEventListener actually works
+    window.removeEventListener('resize', this.boundHandleResize);
+    this.renderer.domElement.removeEventListener('click', this.boundHandleClick);
 
     this.clearScene();
     this.renderer.dispose();
