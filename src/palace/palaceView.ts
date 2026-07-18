@@ -249,8 +249,8 @@ export class PalaceView extends ItemView {
       this.selectedNode = graph.getNode(nodeId) || null;
       this.updateDetailsPanel(layout);
       
-      // Auto-switch to local view if graph is large
-      if (stats.nodes > 500 && !this.isLocalView) {
+      // Auto-switch to local view if graph is large (aligned with display cap)
+      if (stats.nodes > 150 && !this.isLocalView) {
         this.isLocalView = true;
         const viewToggleBtn = layout.querySelector('[data-view-toggle]') as HTMLButtonElement;
         if (viewToggleBtn) {

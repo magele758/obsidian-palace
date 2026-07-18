@@ -16,6 +16,7 @@ import { createWriteNoteTool } from './agent/tools/writeNote';
 import { createListNotesTool } from './agent/tools/listNotes';
 import { createExecuteCodeTool } from './agent/tools/executeCode';
 import { createGraphTools } from './agent/tools/graphTools';
+import { createVaultStatusTool } from './vault-qa';
 import type { LLMMessage, ChatSession, ChatMessage } from './shared/types';
 
 export const CHAT_VIEW_TYPE = 'ai-chat-view';
@@ -45,7 +46,8 @@ class DocSearchModal extends FuzzySuggestModal<TFile> {
 
 /* ---- Write Confirm Modal ---- */
 class WriteConfirmModal extends Modal {
-  private resolve: (value: boolean) => void;
+  private resolveFn: (value: boolean) => void;
+  private settled = false;
   private filePath: string;
   private mode: string;
 
@@ -53,7 +55,13 @@ class WriteConfirmModal extends Modal {
     super(app);
     this.filePath = filePath;
     this.mode = mode;
-    this.resolve = resolve;
+    this.resolveFn = resolve;
+  }
+
+  private settle(value: boolean) {
+    if (this.settled) return;
+    this.settled = true;
+    this.resolveFn(value);
   }
 
   onOpen() {
@@ -70,13 +78,16 @@ class WriteConfirmModal extends Modal {
     btnRow.style.marginTop = '16px';
 
     const cancelBtn = btnRow.createEl('button', { text: 'Cancel' });
-    cancelBtn.addEventListener('click', () => { this.close(); this.resolve(false); });
+    cancelBtn.addEventListener('click', () => { this.settle(false); this.close(); });
 
     const okBtn = btnRow.createEl('button', { text: 'Allow', cls: 'mod-cta' });
-    okBtn.addEventListener('click', () => { this.close(); this.resolve(true); });
+    okBtn.addEventListener('click', () => { this.settle(true); this.close(); });
   }
 
-  onClose() { this.contentEl.empty(); }
+  onClose() {
+    this.settle(false);
+    this.contentEl.empty();
+  }
 }
 
 /* ---- Constants ---- */
@@ -158,6 +169,24 @@ export class ChatView extends ItemView {
     }
 
     this.render();
+    await this.consumePendingAsk();
+  }
+
+  /** Prefill/send a prompt queued by Ask about Selection */
+  async consumePendingAsk() {
+    const prompt = this.plugin.pendingAskPrompt;
+    if (!prompt || this.isLoading) return;
+    this.plugin.pendingAskPrompt = null;
+
+    const activeFile = this.app.workspace.getActiveFile();
+    if (activeFile instanceof TFile) {
+      this.selectedFile = activeFile;
+      this.selectedDocContent = await this.app.vault.cachedRead(activeFile);
+      this.renderDocInfo();
+    }
+
+    this.inputEl.value = prompt;
+    await this.sendCurrentMessage();
   }
 
   async onClose() {
@@ -571,12 +600,12 @@ export class ChatView extends ItemView {
         contextMessages.push({ role: 'assistant', content: 'I\'ve read the additional context. What would you like to know?' });
       }
 
-      // Full chat history from session
-      for (let i = 0; i < session.messages.length - 1; i++) {
-        contextMessages.push({
-          role: session.messages[i].role,
-          content: session.messages[i].content,
-        });
+      // Recent chat history only (avoid unbounded context growth)
+      const MAX_HISTORY = 16;
+      const prior = session.messages.slice(0, -1);
+      const recent = prior.length > MAX_HISTORY ? prior.slice(-MAX_HISTORY) : prior;
+      for (const msg of recent) {
+        contextMessages.push({ role: msg.role, content: msg.content });
       }
       contextMessages.push({ role: 'user', content: userMessage });
 
@@ -607,12 +636,9 @@ export class ChatView extends ItemView {
           toolRegistry.register(tool);
         }
 
-        // Register Vault QA tools if available
-        if (this.plugin.settings.vaultQAEnabled && this.plugin.getVaultQATools) {
-          const tools = this.plugin.getVaultQATools();
-          for (const tool of tools) {
-            toolRegistry.register(tool);
-          }
+        // Vault status tool only — search_vault already uses HybridSearch when available
+        if (this.plugin.settings.vaultQAEnabled && this.plugin.hybridSearch) {
+          toolRegistry.register(createVaultStatusTool(this.app));
         }
 
         const agent = new AgentRunner({
@@ -717,19 +743,29 @@ export class ChatView extends ItemView {
       }
     }
 
-    // #tag: inject up to 10 file paths with that tag
-    const tagPattern = /#([\w/-]+)/g;
+    // #tag: inject up to 10 file paths with that tag (frontmatter + inline)
+    const tagPattern = /(?:^|[\s(])#([\w/-]+)/g;
     const tagMatches = [...message.matchAll(tagPattern)];
     for (const match of tagMatches) {
-      const tag = '#' + match[1];
+      const tagName = match[1].toLowerCase();
       const files = this.app.vault.getMarkdownFiles().filter((f) => {
-        const meta = this.app.metadataCache.getCache(f.path);
-        return (meta?.tags ?? []).some((t: { tag: string }) => t.tag === tag);
+        const cache = this.app.metadataCache.getFileCache(f);
+        if (!cache) return false;
+        const tags = [
+          ...(cache.tags ?? []).map((t) => t.tag.replace(/^#/, '').toLowerCase()),
+          ...((cache.frontmatter?.tags as string[] | string | undefined)
+            ? (Array.isArray(cache.frontmatter.tags)
+                ? cache.frontmatter.tags
+                : String(cache.frontmatter.tags).split(/[,\s]+/))
+                .map((t) => String(t).replace(/^#/, '').toLowerCase())
+            : []),
+        ];
+        return tags.includes(tagName);
       }).slice(0, 10);
 
       if (files.length > 0) {
         parts.push(
-          `[Notes tagged ${tag}]: ${files.map((f) => `[[${f.path.replace(/\.md$/, '')}]]`).join(', ')}`
+          `[Notes tagged #${tagName}]: ${files.map((f) => `[[${f.path.replace(/\.md$/, '')}]]`).join(', ')}`
         );
       }
     }

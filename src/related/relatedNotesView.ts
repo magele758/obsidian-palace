@@ -39,28 +39,38 @@ export class RelatedNotesView extends ItemView {
 
     this.contentEl2 = root.createDiv({ cls: 'palace-related-notes-content' });
 
-    // Listen for active file changes
+    // Listen for active file / metadata changes
     this.registerEvent(
-      this.app.workspace.on('active-leaf-change', () => this.refresh())
+      this.app.workspace.on('active-leaf-change', () => this.refresh(true))
     );
     this.registerEvent(
-      this.app.workspace.on('file-open', () => this.refresh())
+      this.app.workspace.on('file-open', () => this.refresh(true))
+    );
+    this.registerEvent(
+      this.app.metadataCache.on('changed', (file) => {
+        if (file.path === this.currentPath) this.refresh(true);
+      })
     );
 
-    await this.refresh();
+    await this.refresh(true);
   }
 
   async onClose() {
     // nothing
   }
 
-  private async refresh() {
+  private async refresh(force = false) {
     const activeFile = this.app.workspace.getActiveFile();
     const newPath = activeFile?.path ?? null;
 
-    if (newPath === this.currentPath) return;
-    this.currentPath = newPath;
-    this.render(activeFile);
+    // Keep showing last note when focus moves to this sidebar itself
+    if (!activeFile && this.currentPath && !force) return;
+
+    if (!force && newPath === this.currentPath) return;
+    if (activeFile) this.currentPath = activeFile.path;
+    this.render(activeFile ?? (this.currentPath
+      ? this.app.vault.getAbstractFileByPath(this.currentPath) as TFile
+      : null));
   }
 
   private render(file: TFile | null) {
