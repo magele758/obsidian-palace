@@ -3,7 +3,7 @@
  */
 
 import {
-  ItemView, WorkspaceLeaf, MarkdownRenderer, Notice,
+  ItemView, WorkspaceLeaf, MarkdownRenderer, Notice, Modal,
   setIcon, FuzzySuggestModal, TFile, App
 } from 'obsidian';
 import type ObsidianPalacePlugin from './main';
@@ -15,6 +15,7 @@ import { createReadNoteTool } from './agent/tools/readNote';
 import { createWriteNoteTool } from './agent/tools/writeNote';
 import { createListNotesTool } from './agent/tools/listNotes';
 import { createExecuteCodeTool } from './agent/tools/executeCode';
+import { createGraphTools } from './agent/tools/graphTools';
 import type { LLMMessage, ChatSession, ChatMessage } from './shared/types';
 
 export const CHAT_VIEW_TYPE = 'ai-chat-view';
@@ -42,6 +43,42 @@ class DocSearchModal extends FuzzySuggestModal<TFile> {
   }
 }
 
+/* ---- Write Confirm Modal ---- */
+class WriteConfirmModal extends Modal {
+  private resolve: (value: boolean) => void;
+  private filePath: string;
+  private mode: string;
+
+  constructor(app: App, filePath: string, mode: string, resolve: (value: boolean) => void) {
+    super(app);
+    this.filePath = filePath;
+    this.mode = mode;
+    this.resolve = resolve;
+  }
+
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.createEl('h3', { text: 'Confirm write' });
+    contentEl.createEl('p', {
+      text: `The agent wants to ${this.mode} "${this.filePath}". Allow?`,
+    });
+
+    const btnRow = contentEl.createDiv({ cls: 'modal-button-container' });
+    btnRow.style.display = 'flex';
+    btnRow.style.justifyContent = 'flex-end';
+    btnRow.style.gap = '8px';
+    btnRow.style.marginTop = '16px';
+
+    const cancelBtn = btnRow.createEl('button', { text: 'Cancel' });
+    cancelBtn.addEventListener('click', () => { this.close(); this.resolve(false); });
+
+    const okBtn = btnRow.createEl('button', { text: 'Allow', cls: 'mod-cta' });
+    okBtn.addEventListener('click', () => { this.close(); this.resolve(true); });
+  }
+
+  onClose() { this.contentEl.empty(); }
+}
+
 /* ---- Constants ---- */
 const QUICK_ACTIONS = [
   { label: '📝 Summary', prompt: 'Summarize this document concisely, listing key points.' },
@@ -55,18 +92,20 @@ const AGENT_SYSTEM_PROMPT = `You are an AI assistant embedded in Obsidian, a kno
 
 Capabilities:
 - Search, read, and write notes in the vault
+- Traverse the vault link graph (get_note_links, traverse_links, find_orphan_notes, get_related_notes)
 - Execute code in a cloud sandbox (if configured)
 - Answer questions based on document context
 - Extract knowledge and build knowledge graphs
-- Search entire vault with semantic search (if Vault QA is enabled)
+- Search entire vault with text search (search_vault, search_vault_qa if enabled)
 
 Rules:
 1. Use tools proactively when needed to answer questions or complete tasks.
 2. When a document is selected, base your answers on its content first.
-3. Use Markdown formatting in responses.
-4. Be concise and accurate.
-5. If you need more information, search the vault or ask the user.
-6. For questions about the entire knowledge base, use search_vault_qa if available.`;
+3. Prefer search_vault or search_vault_qa for vault-wide queries; use graph tools to explore connections.
+4. Use Markdown formatting in responses.
+5. Be concise and accurate.
+6. When citing a vault note, always include its wiki-link, e.g. [[path/to/note]] or the citation field returned by search_vault.
+7. If you need more information, search the vault or ask the user.`;
 
 /* ---- ChatView ---- */
 export class ChatView extends ItemView {
@@ -493,6 +532,7 @@ export class ChatView extends ItemView {
 
     try {
       const llmClient = new LLMClient({ baseUrl, apiKey, modelName });
+      const maxCtx = this.plugin.settings.maxDocContextChars ?? 12000;
 
       // Build system prompt
       let systemPrompt = AGENT_SYSTEM_PROMPT;
@@ -505,18 +545,30 @@ export class ChatView extends ItemView {
         systemPrompt += `\n\n## Active Skill: ${matchedSkill.metadata.name}\n\n${matchedSkill.instructions}`;
       }
 
+      // Resolve @mention and #tag context from the user message
+      const extraContext = await this.resolveMessageContext(userMessage, maxCtx);
+
       // Build context messages
       const contextMessages: LLMMessage[] = [];
 
       if (this.selectedFile && this.selectedDocContent) {
+        const truncated = this.selectedDocContent.length > maxCtx
+          ? this.selectedDocContent.slice(0, maxCtx) + '\n\n[...truncated]'
+          : this.selectedDocContent;
         contextMessages.push({
           role: 'user',
-          content: `[Document context: "${this.selectedFile.basename}"]\n\n---\n${this.selectedDocContent}\n---\n\nPlease remember this document. I'll ask questions next.`,
+          content: `[Document context: "${this.selectedFile.basename}"]\n\n---\n${truncated}\n---\n\nPlease remember this document. I'll ask questions next.`,
         });
         contextMessages.push({
           role: 'assistant',
           content: 'I\'ve read the document. What would you like to know?',
         });
+      }
+
+      // Inject @mention / #tag extra context
+      if (extraContext) {
+        contextMessages.push({ role: 'user', content: extraContext });
+        contextMessages.push({ role: 'assistant', content: 'I\'ve read the additional context. What would you like to know?' });
       }
 
       // Full chat history from session
@@ -531,12 +583,29 @@ export class ChatView extends ItemView {
       let result: string;
 
       if (agentEnabled) {
+        // Build write confirm callback if required
+        const confirmWrite = this.plugin.settings.requireWriteConfirm
+          ? (path: string, mode: string) =>
+              new Promise<boolean>((resolve) => {
+                new WriteConfirmModal(this.app, path, mode, resolve).open();
+              })
+          : undefined;
+
         const toolRegistry = new ToolRegistry();
-        toolRegistry.register(createSearchVaultTool(this.app));
+        toolRegistry.register(createSearchVaultTool(this.app, this.plugin.hybridSearch));
         toolRegistry.register(createReadNoteTool(this.app));
-        toolRegistry.register(createWriteNoteTool(this.app));
+        toolRegistry.register(createWriteNoteTool(this.app, confirmWrite));
         toolRegistry.register(createListNotesTool(this.app));
-        toolRegistry.register(createExecuteCodeTool(this.plugin.sandboxProvider));
+
+        // execute_code only when sandbox is available
+        if (this.plugin.sandboxProvider) {
+          toolRegistry.register(createExecuteCodeTool(this.plugin.sandboxProvider));
+        }
+
+        // Graph tools
+        for (const tool of createGraphTools(this.app)) {
+          toolRegistry.register(tool);
+        }
 
         // Register Vault QA tools if available
         if (this.plugin.settings.vaultQAEnabled && this.plugin.getVaultQATools) {
@@ -617,5 +686,54 @@ export class ChatView extends ItemView {
       this.sendBtn.removeClass('ai-chat-loading');
       this.abortController = null;
     }
+  }
+
+  /**
+   * Resolve @path/to/note.md, @Note Name mentions and #tag references in a message.
+   * Returns an injected context block or null.
+   */
+  private async resolveMessageContext(message: string, maxChars: number): Promise<string | null> {
+    const parts: string[] = [];
+
+    // @mention: @path/to/note or @Note Name (resolved against vault files)
+    const mentionPattern = /@([\w/.:-]+(?:\s[\w/.:-]+)*)/g;
+    const mentionMatches = [...message.matchAll(mentionPattern)];
+    for (const match of mentionMatches) {
+      const raw = match[1].trim();
+      // Try exact path match first, then basename match
+      const allFiles = this.app.vault.getMarkdownFiles();
+      const file =
+        (this.app.vault.getAbstractFileByPath(raw) as TFile | null) ||
+        (this.app.vault.getAbstractFileByPath(raw + '.md') as TFile | null) ||
+        allFiles.find((f) => f.basename.toLowerCase() === raw.toLowerCase()) ||
+        null;
+
+      if (file instanceof TFile) {
+        const content = await this.app.vault.cachedRead(file);
+        const truncated = content.length > maxChars
+          ? content.slice(0, maxChars) + '\n\n[...truncated]'
+          : content;
+        parts.push(`[Mentioned note: "${file.path}"]\n\n---\n${truncated}\n---`);
+      }
+    }
+
+    // #tag: inject up to 10 file paths with that tag
+    const tagPattern = /#([\w/-]+)/g;
+    const tagMatches = [...message.matchAll(tagPattern)];
+    for (const match of tagMatches) {
+      const tag = '#' + match[1];
+      const files = this.app.vault.getMarkdownFiles().filter((f) => {
+        const meta = this.app.metadataCache.getCache(f.path);
+        return (meta?.tags ?? []).some((t: { tag: string }) => t.tag === tag);
+      }).slice(0, 10);
+
+      if (files.length > 0) {
+        parts.push(
+          `[Notes tagged ${tag}]: ${files.map((f) => `[[${f.path.replace(/\.md$/, '')}]]`).join(', ')}`
+        );
+      }
+    }
+
+    return parts.length > 0 ? parts.join('\n\n') : null;
   }
 }

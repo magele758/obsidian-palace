@@ -14,6 +14,7 @@ import { PalaceSettings, PalaceSettingTab, DEFAULT_SETTINGS } from './settings';
 import { Translator, TranslatorConfig } from './translator';
 import { ChatView, CHAT_VIEW_TYPE } from './chatView';
 import { PalaceView, PALACE_VIEW_TYPE } from './palace/palaceView';
+import { RelatedNotesView, RELATED_NOTES_VIEW_TYPE } from './related/relatedNotesView';
 import { LLMClient } from './shared/llmClient';
 import { KnowledgeGraph } from './palace/knowledgeGraph';
 import { GraphExtractor } from './palace/graphExtractor';
@@ -104,6 +105,10 @@ export default class ObsidianPalacePlugin extends Plugin {
     this.registerView(CHAT_VIEW_TYPE, (leaf) => new ChatView(leaf, this));
     this.registerView(PALACE_VIEW_TYPE, (leaf) => new PalaceView(leaf, this));
 
+    if (this.settings.relatedNotesEnabled) {
+      this.registerView(RELATED_NOTES_VIEW_TYPE, (leaf) => new RelatedNotesView(leaf, this));
+    }
+
     // Ribbon icons
     this.addRibbonIcon('message-square', 'Open AI Assistant', () => {
       this.activateChatView();
@@ -112,6 +117,12 @@ export default class ObsidianPalacePlugin extends Plugin {
     this.addRibbonIcon('brain', 'Open Memory Palace', () => {
       this.activatePalaceView();
     });
+
+    if (this.settings.relatedNotesEnabled) {
+      this.addRibbonIcon('git-fork', 'Open Related Notes', () => {
+        this.activateRelatedNotesView();
+      });
+    }
 
     // Commands
     this.addCommand({
@@ -124,6 +135,12 @@ export default class ObsidianPalacePlugin extends Plugin {
       id: 'open-palace',
       name: 'Open Memory Palace',
       callback: () => this.activatePalaceView(),
+    });
+
+    this.addCommand({
+      id: 'open-related-notes',
+      name: 'Open Related Notes',
+      callback: () => this.activateRelatedNotesView(),
     });
 
     this.addCommand({
@@ -239,6 +256,8 @@ export default class ObsidianPalacePlugin extends Plugin {
     const store = await this.readStore();
     store.settings = this.settings;
     await this.writeStore(store);
+    // Hot-reload sandbox when E2B credentials change
+    this.initSandbox();
   }
 
   async loadPalaceData() {
@@ -332,7 +351,7 @@ export default class ObsidianPalacePlugin extends Plugin {
 
   /* ---- Sandbox ---- */
 
-  private initSandbox() {
+  initSandbox() {
     if (this.settings.sandboxProvider === 'e2b' && this.settings.e2bApiKey) {
       this.sandboxProvider = new E2BProvider(
         this.settings.e2bApiKey,
@@ -341,6 +360,11 @@ export default class ObsidianPalacePlugin extends Plugin {
     } else {
       this.sandboxProvider = null;
     }
+  }
+
+  /** Re-initialize sandbox — call after changing E2B settings */
+  reinitSandbox() {
+    this.initSandbox();
   }
 
   /* ---- Knowledge Extraction ---- */
@@ -658,6 +682,22 @@ export default class ObsidianPalacePlugin extends Plugin {
     const leaf = this.app.workspace.getLeaf('tab');
     if (leaf) {
       await leaf.setViewState({ type: PALACE_VIEW_TYPE, active: true });
+      this.app.workspace.revealLeaf(leaf);
+    }
+  }
+
+  async activateRelatedNotesView() {
+    if (!this.settings.relatedNotesEnabled) return;
+
+    const existing = this.app.workspace.getLeavesOfType(RELATED_NOTES_VIEW_TYPE);
+    if (existing.length) {
+      this.app.workspace.revealLeaf(existing[0]);
+      return;
+    }
+
+    const leaf = this.app.workspace.getRightLeaf(false);
+    if (leaf) {
+      await leaf.setViewState({ type: RELATED_NOTES_VIEW_TYPE, active: true });
       this.app.workspace.revealLeaf(leaf);
     }
   }
