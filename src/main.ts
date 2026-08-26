@@ -14,6 +14,7 @@ import { PalaceSettings, PalaceSettingTab, DEFAULT_SETTINGS } from './settings';
 import { Translator, TranslatorConfig } from './translator';
 import { ChatView, CHAT_VIEW_TYPE } from './chatView';
 import { PalaceView, PALACE_VIEW_TYPE } from './palace/palaceView';
+import { RelatedNotesView, RELATED_NOTES_VIEW_TYPE } from './related/relatedNotesView';
 import { LLMClient } from './shared/llmClient';
 import { KnowledgeGraph } from './palace/knowledgeGraph';
 import { GraphExtractor } from './palace/graphExtractor';
@@ -48,6 +49,9 @@ export default class ObsidianPalacePlugin extends Plugin {
   // Callback for settings UI
   getVaultQATools?: () => AgentTool[];
   toggleVaultQA?: (enabled: boolean) => Promise<void>;
+
+  /** Pending prompt injected into ChatView (e.g. Ask about Selection) */
+  pendingAskPrompt: string | null = null;
 
   async onload() {
     // Load all data at once to reduce disk I/O
@@ -104,6 +108,9 @@ export default class ObsidianPalacePlugin extends Plugin {
     this.registerView(CHAT_VIEW_TYPE, (leaf) => new ChatView(leaf, this));
     this.registerView(PALACE_VIEW_TYPE, (leaf) => new PalaceView(leaf, this));
 
+    // Always register so enabling in settings later still works without reload
+    this.registerView(RELATED_NOTES_VIEW_TYPE, (leaf) => new RelatedNotesView(leaf, this));
+
     // Ribbon icons
     this.addRibbonIcon('message-square', 'Open AI Assistant', () => {
       this.activateChatView();
@@ -111,6 +118,14 @@ export default class ObsidianPalacePlugin extends Plugin {
 
     this.addRibbonIcon('brain', 'Open Memory Palace', () => {
       this.activatePalaceView();
+    });
+
+    this.addRibbonIcon('git-fork', 'Open Related Notes', () => {
+      if (!this.settings.relatedNotesEnabled) {
+        new Notice('Enable Related Notes in settings first');
+        return;
+      }
+      this.activateRelatedNotesView();
     });
 
     // Commands
@@ -124,6 +139,12 @@ export default class ObsidianPalacePlugin extends Plugin {
       id: 'open-palace',
       name: 'Open Memory Palace',
       callback: () => this.activatePalaceView(),
+    });
+
+    this.addCommand({
+      id: 'open-related-notes',
+      name: 'Open Related Notes',
+      callback: () => this.activateRelatedNotesView(),
     });
 
     this.addCommand({
@@ -190,6 +211,10 @@ export default class ObsidianPalacePlugin extends Plugin {
             item.setTitle('AI Translate Selection').setIcon('languages')
               .onClick(() => this.translateSelection(editor));
           });
+          menu.addItem((item) => {
+            item.setTitle('Ask AI about Selection').setIcon('message-square')
+              .onClick(() => this.askAboutSelection(editor));
+          });
         }
 
         menu.addItem((item) => {
@@ -198,6 +223,14 @@ export default class ObsidianPalacePlugin extends Plugin {
         });
       })
     );
+
+    this.addCommand({
+      id: 'ask-ai-selection',
+      name: 'Ask AI about Selection',
+      editorCallback: (editor: Editor) => {
+        this.askAboutSelection(editor);
+      },
+    });
   }
 
   async onunload() {
@@ -239,6 +272,8 @@ export default class ObsidianPalacePlugin extends Plugin {
     const store = await this.readStore();
     store.settings = this.settings;
     await this.writeStore(store);
+    // Hot-reload sandbox when E2B credentials change
+    await this.reinitSandbox();
   }
 
   async loadPalaceData() {
@@ -332,7 +367,7 @@ export default class ObsidianPalacePlugin extends Plugin {
 
   /* ---- Sandbox ---- */
 
-  private initSandbox() {
+  initSandbox() {
     if (this.settings.sandboxProvider === 'e2b' && this.settings.e2bApiKey) {
       this.sandboxProvider = new E2BProvider(
         this.settings.e2bApiKey,
@@ -341,6 +376,19 @@ export default class ObsidianPalacePlugin extends Plugin {
     } else {
       this.sandboxProvider = null;
     }
+  }
+
+  /** Re-initialize sandbox — call after changing E2B settings */
+  async reinitSandbox() {
+    if (this.sandboxProvider) {
+      try {
+        await this.sandboxProvider.destroy();
+      } catch {
+        // ignore destroy errors during reinit
+      }
+      this.sandboxProvider = null;
+    }
+    this.initSandbox();
   }
 
   /* ---- Knowledge Extraction ---- */
@@ -662,6 +710,22 @@ export default class ObsidianPalacePlugin extends Plugin {
     }
   }
 
+  async activateRelatedNotesView() {
+    if (!this.settings.relatedNotesEnabled) return;
+
+    const existing = this.app.workspace.getLeavesOfType(RELATED_NOTES_VIEW_TYPE);
+    if (existing.length) {
+      this.app.workspace.revealLeaf(existing[0]);
+      return;
+    }
+
+    const leaf = this.app.workspace.getRightLeaf(false);
+    if (leaf) {
+      await leaf.setViewState({ type: RELATED_NOTES_VIEW_TYPE, active: true });
+      this.app.workspace.revealLeaf(leaf);
+    }
+  }
+
   /* ---- Translation (kept from original) ---- */
 
   private createTranslator(): Translator {
@@ -745,6 +809,30 @@ export default class ObsidianPalacePlugin extends Plugin {
       notice.hide();
       const msg = error instanceof Error ? error.message : String(error);
       new Notice(`Translation failed: ${msg}`, 8000);
+    }
+  }
+
+  async askAboutSelection(editor: Editor) {
+    const selection = editor.getSelection().trim();
+    if (!selection) {
+      new Notice('Please select text to ask about');
+      return;
+    }
+
+    const activeFile = this.app.workspace.getActiveFile();
+    const cite = activeFile ? ` (from [[${activeFile.path.replace(/\.md$/, '')}]])` : '';
+    this.pendingAskPrompt =
+      `Explain or answer based on this selection${cite}:\n\n---\n${selection.slice(0, 8000)}\n---`;
+
+    await this.activateChatView();
+
+    // Deliver to an already-open chat view
+    const leaves = this.app.workspace.getLeavesOfType(CHAT_VIEW_TYPE);
+    if (leaves.length) {
+      const view = leaves[0].view as ChatView;
+      if (typeof view.consumePendingAsk === 'function') {
+        await view.consumePendingAsk();
+      }
     }
   }
 
