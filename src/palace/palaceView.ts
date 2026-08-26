@@ -7,7 +7,7 @@ import type ObsidianPalacePlugin from '../main';
 import { KnowledgeGraph } from './knowledgeGraph';
 import { getDueCards, getReviewStats, processReview } from './reviewScheduler';
 import type { QualityRating } from './reviewScheduler';
-import type { KnowledgeNode, Flashcard } from '../shared/types';
+import type { KnowledgeNode, Flashcard, KnowledgeGraphData } from '../shared/types';
 import { Graph2DRenderer } from './graph2d';
 import { Graph3DRenderer } from './graph3d';
 
@@ -37,6 +37,8 @@ export class PalaceView extends ItemView {
   private graphRenderer: Graph2DRenderer | Graph3DRenderer | null = null;
   private selectedNode: KnowledgeNode | null = null;
   private isLocalView = false;
+  // Tracks whether we have already auto-set isLocalView based on node count
+  private hasAutoSetLocalView = false;
 
   constructor(leaf: WorkspaceLeaf, plugin: ObsidianPalacePlugin) {
     super(leaf);
@@ -125,6 +127,12 @@ export class PalaceView extends ItemView {
     const graph = this.plugin.knowledgeGraph;
     const stats = graph.getStats();
 
+    // Default to local view on first open when graph is large (avoids rendering 7000+ nodes)
+    if (!this.hasAutoSetLocalView) {
+      this.hasAutoSetLocalView = true;
+      if (stats.nodes > 80) this.isLocalView = true;
+    }
+
     // Show processing indicator if extraction is in progress
     if (this.plugin.isProcessing) {
       this.renderProcessingState(container);
@@ -189,6 +197,8 @@ export class PalaceView extends ItemView {
       cls: `palace-action-btn-small ${this.isLocalView ? 'active' : ''}`, 
       text: this.isLocalView ? '🔍 Local' : '🌐 Global' 
     });
+    viewMode.title = 'Toggle Local/Global View';
+    viewMode.setAttribute('data-view-toggle', 'true');
     viewMode.addEventListener('click', () => {
       this.isLocalView = !this.isLocalView;
       viewMode.setText(this.isLocalView ? '🔍 Local' : '🌐 Global');
@@ -239,12 +249,12 @@ export class PalaceView extends ItemView {
       this.selectedNode = graph.getNode(nodeId) || null;
       this.updateDetailsPanel(layout);
       
-      // Auto-switch to local view if graph is large
-      if (stats.nodes > 500 && !this.isLocalView) {
+      // Auto-switch to local view if graph is large (aligned with display cap)
+      if (stats.nodes > 150 && !this.isLocalView) {
         this.isLocalView = true;
-        const viewToggleBtn = layout.querySelector('.palace-action-btn-small[title*="Toggle"]') as HTMLButtonElement;
+        const viewToggleBtn = layout.querySelector('[data-view-toggle]') as HTMLButtonElement;
         if (viewToggleBtn) {
-          viewToggleBtn.setText('🔍 Local View');
+          viewToggleBtn.setText('🔍 Local');
           viewToggleBtn.classList.add('active');
         }
         this.refreshGraphDisplay();
@@ -262,19 +272,39 @@ export class PalaceView extends ItemView {
 
   private refreshGraphDisplay() {
     if (!this.graphRenderer || !this.plugin.knowledgeGraph) return;
-
-    if (this.isLocalView && this.selectedNode) {
-      // Show only subgraph
-      const subgraph = this.plugin.knowledgeGraph.getSubgraph(this.selectedNode.id, 1);
-      this.graphRenderer.render(subgraph);
-    } else {
-      // Show full graph
-      this.graphRenderer.render(this.plugin.knowledgeGraph);
-    }
-    
+    this.graphRenderer.render(this.getDisplayGraph());
     if (this.selectedNode) {
       this.graphRenderer.highlightNode(this.selectedNode.id);
     }
+  }
+
+  /**
+   * Return the graph to render:
+   * - Local + selection → 1-hop subgraph around the selected node.
+   * - Otherwise → full graph capped at 150 most-connected nodes so we never
+   *   pass 7000+ raw nodes to the renderer when no selection is active.
+   */
+  private getDisplayGraph(): KnowledgeGraph {
+    const graph = this.plugin.knowledgeGraph;
+
+    if (this.isLocalView && this.selectedNode) {
+      return graph.getSubgraph(this.selectedNode.id, 1);
+    }
+
+    const MAX_NODES = 150;
+    const stats = graph.getStats();
+    if (stats.nodes <= MAX_NODES) return graph;
+
+    // Build a capped graph from the top-N most-connected nodes
+    const topItems = graph.getMostConnected(MAX_NODES);
+    const topIds = new Set(topItems.map(item => item.node.id));
+    const cappedEdges = graph.getEdges().filter(e => topIds.has(e.source) && topIds.has(e.target));
+
+    return new KnowledgeGraph({
+      nodes: topItems.map(item => item.node),
+      edges: cappedEdges,
+      lastUpdated: Date.now(),
+    } as KnowledgeGraphData);
   }
 
   private renderNodeListPanel(panel: HTMLElement, graph: KnowledgeGraph, stats: { nodes: number; edges: number }) {
