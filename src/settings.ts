@@ -39,6 +39,11 @@ export interface PalaceSettings {
   obsidianWeight: number;
   grepWeight: number;
   vaultQAMaxResults: number;
+
+  // Agent UX settings
+  requireWriteConfirm: boolean;
+  maxDocContextChars: number;
+  relatedNotesEnabled: boolean;
 }
 
 export const DEFAULT_SETTINGS: Partial<PalaceSettings> = {
@@ -60,10 +65,15 @@ export const DEFAULT_SETTINGS: Partial<PalaceSettings> = {
   embeddingEnabled: false,
   embeddingModel: 'text-embedding-3-small',
   // Vault QA defaults (text-based search)
-  vaultQAEnabled: false,
+  vaultQAEnabled: true,
   obsidianWeight: 0.6,
   grepWeight: 0.4,
   vaultQAMaxResults: 10,
+
+  // Agent UX defaults
+  requireWriteConfirm: true,
+  maxDocContextChars: 12000,
+  relatedNotesEnabled: true,
 };
 
 export class PalaceSettingTab extends PluginSettingTab {
@@ -424,5 +434,48 @@ export class PalaceSettingTab extends PluginSettingTab {
             })
         );
     }
+
+    /* ======== Agent UX Settings ======== */
+    containerEl.createEl('h3', { text: 'Agent UX' });
+
+    new Setting(containerEl)
+      .setName('Require write confirmation')
+      .setDesc('Prompt before the agent overwrites or appends to existing notes')
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.requireWriteConfirm ?? true)
+          .onChange(async (value) => {
+            this.plugin.settings.requireWriteConfirm = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName('Max document context characters')
+      .setDesc('Truncate injected document/mention context to this length (default: 12000)')
+      .addText((text) =>
+        text
+          .setPlaceholder('12000')
+          .setValue(String(this.plugin.settings.maxDocContextChars ?? 12000))
+          .onChange(async (value) => {
+            const num = parseInt(value, 10);
+            if (!isNaN(num) && num > 0) {
+              this.plugin.settings.maxDocContextChars = num;
+              await this.plugin.saveSettings();
+            }
+          })
+      );
+
+    new Setting(containerEl)
+      .setName('Enable Related Notes sidebar')
+      .setDesc('Show a sidebar panel with backlinks, outgoing links, and shared-tag notes for the active file')
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.relatedNotesEnabled ?? true)
+          .onChange(async (value) => {
+            this.plugin.settings.relatedNotesEnabled = value;
+            await this.plugin.saveSettings();
+          })
+      );
   }
 }

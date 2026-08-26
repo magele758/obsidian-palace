@@ -50,10 +50,16 @@ export class Graph2DRenderer {
   private animationFrameId: number | null = null;
   private simulationAlpha = 1;
   private boundResize: () => void;
-  
+  private boundMouseMove: (e: MouseEvent) => void;
+  private boundMouseUp: () => void;
+
   // Animation for smooth centering
   private isAnimating = false;
   private targetTransform = { x: 0, y: 0, k: 1 };
+
+  // Cached sorted nodes — only re-sorted when selection changes
+  private cachedSortedNodes: Node2D[] | null = null;
+  private sortedNodesSelectionKey: string | null | undefined = undefined;
 
   constructor(container: HTMLElement) {
     this.container = container;
@@ -66,7 +72,14 @@ export class Graph2DRenderer {
     container.appendChild(this.canvas);
 
     this.boundResize = this.resize.bind(this);
+    // Store bound handlers so we can remove them in dispose()
+    this.boundMouseMove = this.handleMouseMove.bind(this);
+    this.boundMouseUp = this.handleMouseUp.bind(this);
+
     window.addEventListener('resize', this.boundResize);
+    window.addEventListener('mousemove', this.boundMouseMove);
+    window.addEventListener('mouseup', this.boundMouseUp);
+
     this.resize();
     this.setupEvents();
   }
@@ -77,7 +90,8 @@ export class Graph2DRenderer {
     this.canvas.width = rect.width * dpr;
     this.canvas.height = rect.height * dpr;
     // Don't call ctx.scale here because we use setTransform in draw()
-    this.simulationAlpha = 0.3;
+    // Use a gentle nudge (0.1) instead of aggressive restart (0.3)
+    if (this.simulationAlpha < 0.1) this.simulationAlpha = 0.1;
     this.startAnimationLoop();
   }
 
@@ -89,6 +103,10 @@ export class Graph2DRenderer {
     const cy = rect.height / 2;
 
     this.nodes.clear();
+    // Invalidate node cache on new graph
+    this.cachedSortedNodes = null;
+    this.sortedNodesSelectionKey = undefined;
+
     for (const node of nodes) {
       const connections = graph.getConnectionCount(node.id);
       this.nodes.set(node.id, {
@@ -233,7 +251,19 @@ export class Graph2DRenderer {
 
     // Draw Nodes (Glowing Stars)
     const showLabels = k > 0.35;
-    const nodes = Array.from(this.nodes.values());
+
+    // Use cached sorted nodes; only re-sort when selection changes
+    if (this.cachedSortedNodes === null || this.sortedNodesSelectionKey !== this.selectedNodeId) {
+      this.sortedNodesSelectionKey = this.selectedNodeId;
+      const nodeArr = Array.from(this.nodes.values());
+      nodeArr.sort((a, b) => {
+        if (a.id === this.selectedNodeId) return 1;
+        if (b.id === this.selectedNodeId) return -1;
+        return a.connections - b.connections;
+      });
+      this.cachedSortedNodes = nodeArr;
+    }
+    const nodes = this.cachedSortedNodes;
     
     // Calculate highlighted neighbors for isolation
     const highlightedIds = new Set<string>();
@@ -245,13 +275,6 @@ export class Graph2DRenderer {
       }
     }
 
-    // Sort nodes to draw selected/hovered last (on top)
-    nodes.sort((a, b) => {
-      if (a.id === this.selectedNodeId) return 1;
-      if (b.id === this.selectedNodeId) return -1;
-      return a.connections - b.connections;
-    });
-
     for (const n of nodes) {
       // Focus Isolation: Skip drawing if a node is selected but this node isn't related
       if (this.selectedNodeId && !highlightedIds.has(n.id)) continue;
@@ -262,22 +285,30 @@ export class Graph2DRenderer {
       const radius = (isSelected || isHovered) ? baseRadius * 1.5 : baseRadius;
       const color = Graph2DRenderer.NODE_COLORS[n.node.type] || '#7c3aed';
 
-      // Create radial glow for "Star" look
-      const gradient = this.ctx.createRadialGradient(n.x, n.y, 0, n.x, n.y, radius * 2.5);
-      gradient.addColorStop(0, 'white');
-      gradient.addColorStop(0.2, color);
-      gradient.addColorStop(0.4, isSelected ? color + '88' : color + '44');
-      gradient.addColorStop(1, 'transparent');
+      if (isSelected || isHovered) {
+        // Radial glow only for selected / hovered — createRadialGradient is expensive
+        const gradient = this.ctx.createRadialGradient(n.x, n.y, 0, n.x, n.y, radius * 2.5);
+        gradient.addColorStop(0, 'white');
+        gradient.addColorStop(0.2, color);
+        gradient.addColorStop(0.4, isSelected ? color + '88' : color + '44');
+        gradient.addColorStop(1, 'transparent');
 
-      this.ctx.beginPath();
-      this.ctx.arc(n.x, n.y, radius * 2.5, 0, Math.PI * 2);
-      this.ctx.fillStyle = gradient;
-      this.ctx.fill();
+        this.ctx.beginPath();
+        this.ctx.arc(n.x, n.y, radius * 2.5, 0, Math.PI * 2);
+        this.ctx.fillStyle = gradient;
+        this.ctx.fill();
+      } else {
+        // Solid fill for normal nodes — much faster than createRadialGradient per node
+        this.ctx.beginPath();
+        this.ctx.arc(n.x, n.y, radius, 0, Math.PI * 2);
+        this.ctx.fillStyle = color;
+        this.ctx.fill();
+      }
 
       // Core point
       this.ctx.beginPath();
       this.ctx.arc(n.x, n.y, radius * 0.6, 0, Math.PI * 2);
-      this.ctx.fillStyle = isSelected ? '#fff' : 'white';
+      this.ctx.fillStyle = 'white';
       this.ctx.fill();
 
       // LOD Labels
@@ -338,6 +369,43 @@ export class Graph2DRenderer {
     };
   }
 
+  /* ---- Bound event handlers (stored for proper removeEventListener in dispose) ---- */
+
+  private handleMouseMove(e: MouseEvent): void {
+    const { x, y } = this.screenToWorld(e.clientX, e.clientY);
+      
+    if (!this.isDragging) {
+      // Only redraw when the hovered node actually changes
+      const newHovered = this.findNodeAt(x, y);
+      if (newHovered !== this.hoveredNodeId) {
+        this.hoveredNodeId = newHovered;
+        this.draw();
+      }
+      return;
+    }
+
+    if (this.dragNodeId) {
+      const node = this.nodes.get(this.dragNodeId)!;
+      node.x = x; node.y = y;
+      node.vx = node.vy = 0;
+      this.simulationAlpha = 0.2;
+      this.startAnimationLoop();
+    } else {
+      const dx = e.clientX - this.dragStart.x;
+      const dy = e.clientY - this.dragStart.y;
+      this.transform.x += dx;
+      this.transform.y += dy;
+      this.dragStart = { x: e.clientX, y: e.clientY };
+      this.draw();
+    }
+  }
+
+  private handleMouseUp(): void {
+    this.isDragging = false;
+    this.dragNodeId = null;
+    this.canvas.style.cursor = 'grab';
+  }
+
   private setupEvents(): void {
     this.canvas.addEventListener('mousedown', e => {
       const { x, y } = this.screenToWorld(e.clientX, e.clientY);
@@ -352,37 +420,6 @@ export class Graph2DRenderer {
         this.dragStart = { x: e.clientX, y: e.clientY };
         this.canvas.style.cursor = 'grabbing';
       }
-    });
-
-    window.addEventListener('mousemove', e => {
-      const { x, y } = this.screenToWorld(e.clientX, e.clientY);
-      
-      if (!this.isDragging) {
-        this.hoveredNodeId = this.findNodeAt(x, y);
-        this.draw();
-        return;
-      }
-
-      if (this.dragNodeId) {
-        const node = this.nodes.get(this.dragNodeId)!;
-        node.x = x; node.y = y;
-        node.vx = node.vy = 0;
-        this.simulationAlpha = 0.2;
-        this.startAnimationLoop();
-      } else {
-        const dx = e.clientX - this.dragStart.x;
-        const dy = e.clientY - this.dragStart.y;
-        this.transform.x += dx;
-        this.transform.y += dy;
-        this.dragStart = { x: e.clientX, y: e.clientY };
-        this.draw();
-      }
-    });
-
-    window.addEventListener('mouseup', () => {
-      this.isDragging = false;
-      this.dragNodeId = null;
-      this.canvas.style.cursor = 'grab';
     });
 
     this.canvas.addEventListener('click', e => {
@@ -441,8 +478,10 @@ export class Graph2DRenderer {
   }
 
   private findNodeAt(x: number, y: number): string | null {
-    const nodeArr = Array.from(this.nodes.values()).reverse();
-    for (const n of nodeArr) {
+    // Reuse cached sorted array (no allocation); iterate reverse for top-of-stack priority
+    const nodeArr = this.cachedSortedNodes || Array.from(this.nodes.values());
+    for (let i = nodeArr.length - 1; i >= 0; i--) {
+      const n = nodeArr[i];
       const hitRadius = (15 / this.transform.k) + 5;
       const dx = n.x - x, dy = n.y - y;
       if (dx * dx + dy * dy < hitRadius * hitRadius) return n.id;
@@ -451,6 +490,10 @@ export class Graph2DRenderer {
   }
 
   /* ---- Public API ---- */
+
+  onSelect(callback: (nodeId: string | null) => void): void {
+    this.onSelectCallback = callback;
+  }
 
   render(graph?: KnowledgeGraph): void {
     if (graph) {
@@ -482,6 +525,8 @@ export class Graph2DRenderer {
 
   dispose(): void {
     window.removeEventListener('resize', this.boundResize);
+    window.removeEventListener('mousemove', this.boundMouseMove);
+    window.removeEventListener('mouseup', this.boundMouseUp);
     if (this.animationFrameId) cancelAnimationFrame(this.animationFrameId);
     this.canvas.remove();
   }

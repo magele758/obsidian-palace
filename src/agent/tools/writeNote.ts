@@ -6,7 +6,10 @@ import { TFile } from 'obsidian';
 import type { App } from 'obsidian';
 import type { AgentTool } from '../../shared/types';
 
-export function createWriteNoteTool(app: App): AgentTool {
+export function createWriteNoteTool(
+  app: App,
+  confirmWrite?: (path: string, mode: string) => Promise<boolean>
+): AgentTool {
   return {
     name: 'write_note',
     description: 'Create a new note or overwrite an existing note in the vault.',
@@ -40,6 +43,14 @@ export function createWriteNoteTool(app: App): AgentTool {
         return JSON.stringify({ error: `File already exists: ${filePath}. Use mode "overwrite" or "append".` });
       }
 
+      // Require confirmation before modifying an existing file
+      if (existing instanceof TFile && (mode === 'overwrite' || mode === 'append') && confirmWrite) {
+        const confirmed = await confirmWrite(filePath, mode);
+        if (!confirmed) {
+          return JSON.stringify({ error: `Write cancelled by user for: ${filePath}` });
+        }
+      }
+
       try {
         if (existing instanceof TFile) {
           if (mode === 'append') {
@@ -49,7 +60,6 @@ export function createWriteNoteTool(app: App): AgentTool {
             await app.vault.modify(existing, content);
           }
         } else {
-          // Ensure parent directory exists
           const dir = filePath.substring(0, filePath.lastIndexOf('/'));
           if (dir) {
             const dirExists = app.vault.getAbstractFileByPath(dir);

@@ -4,11 +4,13 @@
 
 import type { App, TFile } from 'obsidian';
 import type { AgentTool } from '../../shared/types';
+import type { HybridSearch } from '../../vault-qa/hybridSearch';
 
-export function createSearchVaultTool(app: App): AgentTool {
+export function createSearchVaultTool(app: App, hybridSearch?: HybridSearch | null): AgentTool {
   return {
     name: 'search_vault',
-    description: 'Search for notes in the vault by keyword. Returns matching file paths and content snippets.',
+    description:
+      'Search for notes in the vault by keyword. Returns matching file paths, content snippets, relevance scores, and citation paths (e.g. [[path]]) for grounding answers.',
     parameters: {
       type: 'object',
       properties: {
@@ -24,22 +26,41 @@ export function createSearchVaultTool(app: App): AgentTool {
       required: ['query'],
     },
     execute: async (args) => {
-      const query = String(args.query).toLowerCase();
+      const query = String(args.query);
       const limit = Number(args.limit) || 10;
 
+      // Use HybridSearch when available
+      if (hybridSearch) {
+        try {
+          const results = await hybridSearch.search(query, { maxResults: limit });
+          if (results.length === 0) {
+            return JSON.stringify({ message: `No notes found matching "${query}"`, results: [] });
+          }
+          return JSON.stringify({
+            results: results.map((r) => ({
+              filePath: r.filePath,
+              snippet: r.snippet,
+              score: Math.round(r.finalScore * 100) / 100,
+              citation: `[[${r.filePath.replace(/\.md$/, '')}]]`,
+            })),
+          });
+        } catch {
+          // fall through to keyword search
+        }
+      }
+
+      // Keyword fallback
+      const queryLower = query.toLowerCase();
       const files = app.vault.getMarkdownFiles();
-      const results: Array<{ path: string; snippet: string }> = [];
+      const results: Array<{ filePath: string; snippet: string; score: number; citation: string }> = [];
 
       for (const file of files) {
         if (results.length >= limit) break;
 
-        // Check filename match
-        const nameMatch = file.basename.toLowerCase().includes(query);
-
-        // Check content match
+        const nameMatch = file.basename.toLowerCase().includes(queryLower);
         const content = await app.vault.cachedRead(file);
         const contentLower = content.toLowerCase();
-        const idx = contentLower.indexOf(query);
+        const idx = contentLower.indexOf(queryLower);
 
         if (nameMatch || idx !== -1) {
           let snippet = '';
@@ -54,12 +75,17 @@ export function createSearchVaultTool(app: App): AgentTool {
             if (content.length > 160) snippet += '...';
           }
 
-          results.push({ path: file.path, snippet });
+          results.push({
+            filePath: file.path,
+            snippet,
+            score: nameMatch && idx !== -1 ? 1.0 : nameMatch ? 0.8 : 0.6,
+            citation: `[[${file.path.replace(/\.md$/, '')}]]`,
+          });
         }
       }
 
       if (results.length === 0) {
-        return JSON.stringify({ message: `No notes found matching "${args.query}"`, results: [] });
+        return JSON.stringify({ message: `No notes found matching "${query}"`, results: [] });
       }
 
       return JSON.stringify({ results });
