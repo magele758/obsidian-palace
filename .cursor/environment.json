@@ -1,0 +1,4 @@
+{
+  "name": "Obsidian Palace",
+  "install": "npm install && npm run build"
+}
