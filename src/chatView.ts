@@ -8,16 +8,10 @@ import {
 } from 'obsidian';
 import type ObsidianPalacePlugin from './main';
 import { LLMClient } from './shared/llmClient';
-import { AgentRunner } from './agent/agentRunner';
-import { ToolRegistry } from './agent/toolRegistry';
-import { createSearchVaultTool } from './agent/tools/searchVault';
-import { createReadNoteTool } from './agent/tools/readNote';
-import { createWriteNoteTool } from './agent/tools/writeNote';
-import { createListNotesTool } from './agent/tools/listNotes';
-import { createExecuteCodeTool } from './agent/tools/executeCode';
-import { createGraphTools } from './agent/tools/graphTools';
-import { createVaultStatusTool } from './vault-qa';
+import { createPalaceAgent } from './agent/createPalaceAgent';
+import { createPalaceToolRegistry } from './agent/palaceTools';
 import type { LLMMessage, ChatSession, ChatMessage } from './shared/types';
+import { LiveBubble } from './chat/liveBubble';
 
 export const CHAT_VIEW_TYPE = 'ai-chat-view';
 
@@ -558,6 +552,7 @@ export class ChatView extends ItemView {
 
     const session = this.currentSession!;
     const { baseUrl, apiKey, modelName, agentEnabled, agentMaxIterations } = this.plugin.settings;
+    const live = new LiveBubble(bubble);
 
     try {
       const llmClient = new LLMClient({ baseUrl, apiKey, modelName });
@@ -610,6 +605,7 @@ export class ChatView extends ItemView {
       contextMessages.push({ role: 'user', content: userMessage });
 
       let result: string;
+      this.abortController = new AbortController();
 
       if (agentEnabled) {
         // Build write confirm callback if required
@@ -620,28 +616,16 @@ export class ChatView extends ItemView {
               })
           : undefined;
 
-        const toolRegistry = new ToolRegistry();
-        toolRegistry.register(createSearchVaultTool(this.app, this.plugin.hybridSearch));
-        toolRegistry.register(createReadNoteTool(this.app));
-        toolRegistry.register(createWriteNoteTool(this.app, confirmWrite));
-        toolRegistry.register(createListNotesTool(this.app));
+        const toolRegistry = createPalaceToolRegistry({
+          app: this.app,
+          hybridSearch: this.plugin.hybridSearch,
+          sandboxProvider: this.plugin.sandboxProvider,
+          confirmWrite,
+          vaultQAEnabled: this.plugin.settings.vaultQAEnabled,
+        });
 
-        // execute_code only when sandbox is available
-        if (this.plugin.sandboxProvider) {
-          toolRegistry.register(createExecuteCodeTool(this.plugin.sandboxProvider));
-        }
-
-        // Graph tools
-        for (const tool of createGraphTools(this.app)) {
-          toolRegistry.register(tool);
-        }
-
-        // Vault status tool only — search_vault already uses HybridSearch when available
-        if (this.plugin.settings.vaultQAEnabled && this.plugin.hybridSearch) {
-          toolRegistry.register(createVaultStatusTool(this.app));
-        }
-
-        const agent = new AgentRunner({
+        const agent = createPalaceAgent({
+          engine: this.plugin.settings.agentEngine === 'legacy' ? 'legacy' : 'kernel',
           llmClient,
           toolRegistry,
           maxIterations: agentMaxIterations,
@@ -649,26 +633,20 @@ export class ChatView extends ItemView {
           temperature: 0.7,
         });
 
-        this.abortController = new AbortController();
-        let fullText = '';
-
         result = await agent.run(
           contextMessages,
           {
             onToken: (token) => {
-              fullText += token;
-              bubble.empty();
-              MarkdownRenderer.render(this.app, fullText, bubble, '', this);
+              live.append(token);
+              this.scrollToBottom();
+            },
+            onReasoning: () => {
+              if (live.text) return;
+              live.showStatus('思考中…');
               this.scrollToBottom();
             },
             onThinking: (toolName) => {
-              bubble.empty();
-              const thinking = bubble.createDiv({ cls: 'ai-chat-tool-status' });
-              thinking.createSpan({ text: `🔧 Using: ${toolName}` });
-              if (fullText) {
-                const prev = bubble.createDiv();
-                MarkdownRenderer.render(this.app, fullText, prev, '', this);
-              }
+              live.showTool(toolName);
               this.scrollToBottom();
             },
             onToolResult: () => {},
@@ -676,32 +654,26 @@ export class ChatView extends ItemView {
           this.abortController.signal
         );
       } else {
-        this.abortController = new AbortController();
-        let fullText = '';
-
         const response = await llmClient.stream(
           [{ role: 'system', content: systemPrompt }, ...contextMessages],
           (delta) => {
             if (delta.content) {
-              fullText += delta.content;
-              bubble.empty();
-              MarkdownRenderer.render(this.app, fullText, bubble, '', this);
+              live.append(delta.content);
               this.scrollToBottom();
             }
           },
           { temperature: 0.7, signal: this.abortController.signal }
         );
-        result = response.content || fullText;
+        result = response.content || live.text;
       }
 
       // Save assistant response to session
       session.messages.push({ role: 'assistant', content: result });
       await this.plugin.updateChatSession(session);
-
-      bubble.empty();
-      await MarkdownRenderer.render(this.app, result, bubble, '', this);
+      await live.commit(this.app, this, result);
       this.scrollToBottom();
     } catch (error) {
+      live.discard();
       if ((error as Error).name === 'AbortError') return;
       const msg = error instanceof Error ? error.message : String(error);
       bubble.empty();

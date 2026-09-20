@@ -363,6 +363,11 @@
   margin: 4px 0;
 }
 
+.ai-chat-stream-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 /* -- Tool Status -- */
 .ai-chat-tool-status {
   display: flex;

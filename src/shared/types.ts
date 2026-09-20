@@ -47,6 +47,7 @@ export interface ToolDefinition {
 
 export interface LLMStreamDelta {
   content?: string;
+  reasoning?: string;
   tool_calls?: Array<{
     index: number;
     id?: string;
@@ -60,6 +61,7 @@ export interface LLMStreamDelta {
 
 export interface LLMResponse {
   content: string | null;
+  reasoning?: string;
   tool_calls?: ToolCall[];
   finish_reason: string;
 }

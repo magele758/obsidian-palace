@@ -111,7 +111,12 @@ export default class ObsidianPalacePlugin extends Plugin {
     // Always register so enabling in settings later still works without reload
     this.registerView(RELATED_NOTES_VIEW_TYPE, (leaf) => new RelatedNotesView(leaf, this));
 
+    this.app.workspace.onLayoutReady(() => {
+      void this.mountChatSideLeaf(false);
+    });
+
     // Ribbon icons
+
     this.addRibbonIcon('message-square', 'Open AI Assistant', () => {
       this.activateChatView();
     });
@@ -683,17 +688,30 @@ export default class ObsidianPalacePlugin extends Plugin {
   /* ---- Views ---- */
 
   async activateChatView() {
-    const existing = this.app.workspace.getLeavesOfType(CHAT_VIEW_TYPE);
-    if (existing.length) {
-      this.app.workspace.revealLeaf(existing[0]);
+    await this.mountChatSideLeaf(true);
+  }
+
+  /** Pin AI Assistant as a right-sidebar tab. reveal=true focuses it. */
+  private async mountChatSideLeaf(reveal: boolean): Promise<void> {
+    const workspace = this.app.workspace;
+    if (typeof workspace.ensureSideLeaf === 'function') {
+      await workspace.ensureSideLeaf(CHAT_VIEW_TYPE, 'right', {
+        active: reveal,
+        reveal,
+      });
       return;
     }
 
-    const leaf = this.app.workspace.getRightLeaf(false);
-    if (leaf) {
-      await leaf.setViewState({ type: CHAT_VIEW_TYPE, active: true });
-      this.app.workspace.revealLeaf(leaf);
+    const existing = workspace.getLeavesOfType(CHAT_VIEW_TYPE);
+    if (existing.length) {
+      if (reveal) workspace.revealLeaf(existing[0]);
+      return;
     }
+
+    const leaf = workspace.getRightLeaf(true);
+    if (!leaf) return;
+    await leaf.setViewState({ type: CHAT_VIEW_TYPE, active: reveal });
+    if (reveal) workspace.revealLeaf(leaf);
   }
 
   async activatePalaceView() {

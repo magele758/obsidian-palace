@@ -4,7 +4,9 @@
  */
 
 import { requestUrl } from 'obsidian';
-import type { LLMMessage, LLMResponse, LLMStreamDelta, ToolDefinition, ToolCall } from './types';
+import { ChatSseAssembler } from './chatSse';
+import { postSseBytes } from './nodeHttpStream';
+import type { LLMMessage, LLMResponse, LLMStreamDelta, ToolDefinition } from './types';
 
 /* ---- Embedding Types ---- */
 
@@ -30,6 +32,25 @@ export interface LLMClientConfig {
   baseUrl: string;
   apiKey: string;
   modelName: string;
+}
+
+function choiceToResponse(choice: {
+  finish_reason?: string;
+  message?: {
+    content?: string | null;
+    reasoning_content?: string;
+    reasoning?: string;
+    tool_calls?: ToolCall[];
+  };
+}): LLMResponse {
+  const message = choice.message ?? {};
+  const reasoning = message.reasoning_content || message.reasoning;
+  return {
+    content: message.content ?? null,
+    reasoning: reasoning || undefined,
+    tool_calls: message.tool_calls,
+    finish_reason: choice.finish_reason || 'stop',
+  };
 }
 
 export class LLMClient {
@@ -81,16 +102,12 @@ export class LLMClient {
       throw new Error('API returned empty response');
     }
 
-    return {
-      content: choice.message.content,
-      tool_calls: choice.message.tool_calls,
-      finish_reason: choice.finish_reason,
-    };
+    return choiceToResponse(choice);
   }
 
   /**
    * Streaming completion with callback for deltas.
-   * Returns the full assembled response.
+   * Desktop uses Node http so SSE is not buffered by requestUrl/fetch.
    */
   async stream(
     messages: LLMMessage[],
@@ -99,6 +116,7 @@ export class LLMClient {
       temperature?: number;
       tools?: ToolDefinition[];
       signal?: AbortSignal;
+      maxTokens?: number;
     }
   ): Promise<LLMResponse> {
     const url = this.config.baseUrl.replace(/\/+$/, '') + '/chat/completions';
@@ -108,110 +126,25 @@ export class LLMClient {
       messages: messages.map(m => this.serializeMessage(m)),
       temperature: options?.temperature ?? 0.7,
       stream: true,
+      max_tokens: options?.maxTokens ?? 8192,
     };
 
     if (options?.tools && options.tools.length > 0) {
       body.tools = options.tools;
     }
 
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${this.config.apiKey}`,
-      },
-      body: JSON.stringify(body),
-      signal: options?.signal,
-    });
-
-    if (!response.ok) {
-      const errText = await response.text();
-      throw new Error(`API request failed (${response.status}): ${errText}`);
-    }
-
-    const reader = response.body?.getReader();
-    if (!reader) throw new Error('Cannot get response stream');
-
-    const decoder = new TextDecoder();
-    let buffer = '';
-    let fullContent = '';
-    const toolCallAccumulator: Map<number, { id: string; name: string; arguments: string }> = new Map();
-    let finishReason = '';
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || '';
-
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed || !trimmed.startsWith('data:')) continue;
-        const data = trimmed.slice(5).trim();
-        if (data === '[DONE]') continue;
-
-        try {
-          const json = JSON.parse(data);
-          const choice = json.choices?.[0];
-          if (!choice) continue;
-
-          if (choice.finish_reason) {
-            finishReason = choice.finish_reason;
-          }
-
-          const delta = choice.delta;
-          if (!delta) continue;
-
-          // Handle content
-          if (delta.content) {
-            fullContent += delta.content;
-            onDelta({ content: delta.content });
-          }
-
-          // Handle tool calls
-          if (delta.tool_calls) {
-            for (const tc of delta.tool_calls) {
-              const idx = tc.index;
-              if (!toolCallAccumulator.has(idx)) {
-                toolCallAccumulator.set(idx, {
-                  id: tc.id || '',
-                  name: tc.function?.name || '',
-                  arguments: '',
-                });
-              }
-              const acc = toolCallAccumulator.get(idx)!;
-              if (tc.id) acc.id = tc.id;
-              if (tc.function?.name) acc.name = tc.function.name;
-              if (tc.function?.arguments) acc.arguments += tc.function.arguments;
-            }
-            onDelta({ tool_calls: delta.tool_calls });
-          }
-        } catch {
-          // ignore parse errors for partial chunks
-        }
-      }
-    }
-
-    // Build final tool_calls
-    let toolCalls: ToolCall[] | undefined;
-    if (toolCallAccumulator.size > 0) {
-      toolCalls = [];
-      for (const [, tc] of toolCallAccumulator) {
-        toolCalls.push({
-          id: tc.id,
-          type: 'function',
-          function: { name: tc.name, arguments: tc.arguments },
-        });
-      }
-    }
-
-    return {
-      content: fullContent || null,
-      tool_calls: toolCalls,
-      finish_reason: finishReason || 'stop',
+    const headers = {
+      'Content-Type': 'application/json',
+      'Accept': 'text/event-stream',
+      'Authorization': `Bearer ${this.config.apiKey}`,
     };
+    const payload = JSON.stringify(body);
+    const assembler = new ChatSseAssembler(onDelta);
+    await postSseBytes(url, payload, headers, options?.signal, (chunk) =>
+      assembler.pushText(chunk.toString('utf8'))
+    );
+    await assembler.flush();
+    return assembler.result();
   }
 
   private serializeMessage(msg: LLMMessage): Record<string, unknown> {

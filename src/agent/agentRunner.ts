@@ -1,5 +1,7 @@
 /**
- * Agent Runner - multi-step reasoning loop with tool calling.
+ * Legacy Agent Runner - original multi-step tool loop.
+ * Default chat path uses AgentLoopRunner (@ppeng/agent-loop mini). Keep this
+ * class for the settings fallback (`agentEngine: 'legacy'`).
  *
  * Flow:
  * 1. Build messages with system prompt + skill context + user message
@@ -24,6 +26,8 @@ export interface AgentRunnerConfig {
 export interface AgentStreamCallbacks {
   /** Called when the agent starts thinking / calling tools */
   onThinking?: (toolName: string) => void;
+  /** Called once when the model starts a hidden reasoning stream */
+  onReasoning?: () => void;
   /** Called for each text token from the LLM */
   onToken?: (token: string) => void;
   /** Called when a tool is executed, with name and result */

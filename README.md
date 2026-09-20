@@ -229,8 +229,10 @@ src/
 │   ├── types.ts         # Type definitions
 │   └── llmClient.ts     # OpenAI-compatible client
 ├── agent/
-│   ├── agentRunner.ts   # Multi-step reasoning
+│   ├── agentRunner.ts   # Legacy loop (optional fallback)
+│   ├── palaceTools.ts   # Existing vault tools
 │   ├── toolRegistry.ts  # Tool management
+│   ├── loop/            # ppeng-agent-core agent-loop (default)
 │   └── tools/           # Agent tools
 ├── palace/
 │   ├── palaceView.ts    # Memory Palace UI

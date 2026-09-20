@@ -18,6 +18,8 @@ export interface PalaceSettings {
   // Agent settings
   agentEnabled: boolean;
   agentMaxIterations: number;
+  /** kernel = @ppeng/agent-loop mini; legacy = original AgentRunner */
+  agentEngine: 'kernel' | 'legacy';
 
   // Sandbox settings
   sandboxProvider: 'e2b' | 'none';
@@ -56,6 +58,7 @@ export const DEFAULT_SETTINGS: Partial<PalaceSettings> = {
   translationMode: 'newFile',
   agentEnabled: true,
   agentMaxIterations: 10,
+  agentEngine: 'kernel',
   sandboxProvider: 'none',
   e2bApiKey: '',
   e2bDomain: '',
@@ -144,6 +147,20 @@ export class PalaceSettingTab extends PluginSettingTab {
           .setValue(this.plugin.settings.agentEnabled)
           .onChange(async (value) => {
             this.plugin.settings.agentEnabled = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName('Agent engine')
+      .setDesc('Kernel uses ppeng-agent-core agent-loop. Legacy keeps the original runner.')
+      .addDropdown((dropdown) =>
+        dropdown
+          .addOption('kernel', 'Kernel (ppeng agent-loop)')
+          .addOption('legacy', 'Legacy')
+          .setValue(this.plugin.settings.agentEngine || 'kernel')
+          .onChange(async (value) => {
+            this.plugin.settings.agentEngine = value === 'legacy' ? 'legacy' : 'kernel';
             await this.plugin.saveSettings();
           })
       );

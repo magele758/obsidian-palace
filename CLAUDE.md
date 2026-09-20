@@ -17,6 +17,9 @@ npm run dev
 
 # Production build (minified)
 npm run build
+
+# Unit tests (agent-loop integration)
+npm test
 ```
 
 ## Architecture
@@ -33,8 +36,10 @@ src/
 │   ├── types.ts           # Core type definitions
 │   └── llmClient.ts       # Unified LLM API client
 ├── agent/
-│   ├── agentRunner.ts     # Multi-step reasoning loop
+│   ├── agentRunner.ts     # Legacy multi-step loop (optional fallback)
+│   ├── palaceTools.ts     # Existing vault tool set
 │   ├── toolRegistry.ts    # Tool registration/execution
+│   ├── loop/              # @ppeng/agent-loop mini host (default engine)
 │   └── tools/             # Search, read, write, executeCode tools
 ├── palace/
 │   ├── palaceView.ts      # Memory Palace UI (graph, review, stats)
@@ -67,7 +72,7 @@ src/
 
 **shared/llmClient.ts** - Unified OpenAI-compatible client with streaming and tool calling support.
 
-**agent/agentRunner.ts** - Multi-step reasoning loop that manages conversation history and tool execution.
+**agent/agentRunner.ts** - Legacy multi-step loop (kept). Default chat uses `agent/loop/agentLoopRunner.ts` wrapping `@ppeng/agent-loop` mini.
 
 **agent/toolRegistry.ts** - Registry for agent tools (searchVault, readNote, writeNote, listNotes, executeCode).
 
@@ -85,7 +90,7 @@ Plugin data is stored in a unified structure:
 ## Key Settings
 
 - **LLM**: API Base URL, API Key, Model Name (supports OpenAI, DeepSeek, Qwen, Moonshot, etc.)
-- **Agent**: Enable Agent Mode, Max Agent Iterations
+- **Agent**: Enable Agent Mode, Max Agent Iterations, Agent engine (kernel / legacy)
 - **Sandbox**: E2B API Key, Custom Domain
 - **Translation**: Target Language, Mode (newFile/append/replace), Max Chunk Size
 - **Skills**: Skill Directories (default: `~/.claude/skills`, `~/.codex/skills`, `~/.agents/skills`)

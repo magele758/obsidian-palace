@@ -5,7 +5,8 @@
   "main": "main.js",
   "scripts": {
     "dev": "node esbuild.config.mjs",
-    "build": "node esbuild.config.mjs production"
+    "build": "node esbuild.config.mjs production",
+    "test": "vitest run"
   },
   "keywords": [
     "obsidian",
@@ -23,9 +24,11 @@
     "builtin-modules": "^4.0.0",
     "esbuild": "^0.24.0",
     "obsidian": "latest",
-    "typescript": "^5.6.0"
+    "typescript": "^5.6.0",
+    "vitest": "^1.6.1"
   },
   "dependencies": {
+    "@mage-ai-lab/agent-loop": "0.1.1",
     "@types/three": "^0.183.1",
     "three": "^0.183.1"
   }

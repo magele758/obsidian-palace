@@ -228,8 +228,10 @@ src/
 │   ├── types.ts         # 类型定义
 │   └── llmClient.ts     # OpenAI 兼容客户端
 ├── agent/
-│   ├── agentRunner.ts   # 多步推理
+│   ├── agentRunner.ts   # Legacy loop (optional fallback)
+│   ├── palaceTools.ts   # 现有笔记库工具
 │   ├── toolRegistry.ts  # 工具管理
+│   ├── loop/            # ppeng-agent-core agent-loop（默认）
 │   └── tools/           # Agent 工具
 ├── palace/
 │   ├── palaceView.ts    # 记忆宫殿界面
